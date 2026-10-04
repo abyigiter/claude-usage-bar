@@ -1,5 +1,5 @@
-// Usage bar: pills above the prompt — rate limits, context forecast, cost,
-// session duration, live activity, and model. /usage prints the full detail.
+// Usage bar: a strip above the prompt with rate limits, context, cost, git,
+// a live turn timer, activity, and model. /usage prints the full detail.
 
 const READING = { plugin: "usage-bar", key: "last" };
 const ACTIVITY = { plugin: "usage-bar", key: "activity" };
@@ -91,21 +91,22 @@ export function register(on) {
       columns: e.props.bodyColumns,
     };
     const els = $.ui.resolve(e);
-    const row = e.surface === "desktop" ? desktopRow(els, view) : terminalRow(els, view);
+    const isDesktop = e.surface === "desktop";
+    const row = isDesktop ? desktopRow(els, view) : terminalRow(els, view);
     if (!row.length) return next(e);
     const { Box, Text, Button } = els;
     const expanded = !!ui?.expanded;
-    const isDesktop = e.surface === "desktop";
-    row[isDesktop ? "unshift" : "push"](Button({
+    if (!isDesktop) row.push(Text({ key: "pad", children: "  " }));
+    row.push(Button({
       key: "more",
-      label: isDesktop ? (expanded ? "▴" : "▾") : expanded ? "less" : "more",
+      label: expanded ? "▴" : "▾",
       plain: true,
       dimColor: true,
       onPress: async () => { await $.state.set(UI, { expanded: !expanded }); },
     }));
-    const body = [Box({ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 1, paddingX: 1, children: row })];
+    const body = [Box({ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: isDesktop ? 1 : 0, paddingX: 1, children: row })];
     if (expanded) {
-      body.push(Box({ flexDirection: "column", paddingX: 2, children: usageLines(u, a, git).map((l) => Text({ dimColor: true, children: l })) }));
+      body.push(Box({ flexDirection: "column", paddingX: 2, paddingTop: isDesktop ? 1 : 0, children: usageLines(u, a, git).map((l) => Text({ dimColor: true, children: l })) }));
     }
     return Box({ flexDirection: "column", children: body });
   });
@@ -221,71 +222,85 @@ function mergeReading(prev, next) {
   };
 }
 
-function terminalRow({ Text }, { u, a, git, working, columns }) {
-  const pills = [];
+// ---- terminal: segments split by a dim rule ---------------------------------
+// Each segment is one Box of Texts with no gap inside, so its parts stay glued
+// together; the row wraps between segments, never inside one.
+const STATUS_COLOR = { ok: "green", warn: "yellow", crit: "red" };
+const TERM_BAR = 6;
+
+function terminalRow({ Box, Text }, { u, a, git, working, columns }) {
   const wide = columns == null || columns >= 100;
+  const T = (children, o = {}) => Text({ children, ...o });
+  const segs = [];
+
   if (columns == null || columns >= 80) {
-    for (const rl of u?.rateLimits ?? []) pills.push(...limitPill(Text, rl, columns));
+    for (const rl of u?.rateLimits ?? []) {
+      const p = clampPct(rl.percentUsed);
+      const color = STATUS_COLOR[limitStatus(rl)];
+      const reset = resetsIn(rl.resetsAt);
+      const parts = [T(`${limitLabel(rl)} `, { dimColor: true }), ...termBar(Text, p, color, paceOf(rl)?.elapsed), T(` ${p}%`, { color, bold: true })];
+      if (reset && (columns == null || columns >= 90)) parts.push(T(` ↻ ${reset}`, { dimColor: true }));
+      segs.push(parts);
+    }
   }
-  if (u?.context?.window) pills.push(...contextPill(Text, u, columns));
-  if (typeof u?.cost?.usd === "number") {
-    const parts = [[`$${u.cost.usd.toFixed(2)}`, { bold: true }]];
+
+  if (u?.context?.window && u.context.tokens) {
+    const pct = ctxPct(u.context);
+    const color = pct < 50 ? "cyan" : pct < 75 ? "yellow" : "red";
+    const parts = [T("ctx ", { dimColor: true }), ...termBar(Text, pct, color), T(` ${pct}%`, { color, bold: true }), T(` ${short(u.context.tokens)}/${short(u.context.window)}`, { dimColor: true })];
+    const spark = sparkline(u.history);
+    if (spark && (columns == null || columns >= 110)) parts.push(T(` ${spark}`, { color, dimColor: true }));
+    if (u.delta) parts.push(T(u.delta > 0 ? ` ▲ +${short(u.delta)}` : ` ▼ ${short(-u.delta)}`, { dimColor: true }));
+    segs.push(parts);
+  }
+
+  if (u?.cost?.usd > 0) {
+    const parts = [T(`$${u.cost.usd.toFixed(2)}`, { color: "yellow", bold: true })];
     const burn = burnRate(u);
-    if (burn && wide) parts.push([`$${burn.toFixed(2)}/h`, { dim: true }]);
-    pills.push(...pill(Text, "yellow", parts));
+    if (burn && wide) parts.push(T(` $${burn.toFixed(2)}/h`, { dimColor: true }));
+    segs.push(parts);
   }
-  if (working != null) pills.push(...pill(Text, "blue", [["⏱ turn", {}], [mmss(working), { bold: true }]]));
+
+  if (working != null) segs.push([T("● ", { color: "magenta" }), T(mmss(working), { color: "magenta", bold: true })]);
+
   if (git?.branch && wide) {
-    const parts = [[`⎇ ${git.branch.slice(0, 24)}`, {}]];
-    if (git.dirty) parts.push([`±${git.dirty}`, { bold: true }]);
-    pills.push(...pill(Text, git.dirty ? "yellow" : "cyan", parts));
+    const parts = [T(`⎇ ${git.branch.length > 24 ? `${git.branch.slice(0, 23)}…` : git.branch}`, { color: "cyan" })];
+    if (git.dirty) parts.push(T(` ±${git.dirty}`, { color: "yellow" }));
+    const sync = [git.ahead && `↑${git.ahead}`, git.behind && `↓${git.behind}`].filter(Boolean).join(" ");
+    if (sync) parts.push(T(` ${sync}`, { dimColor: true }));
+    segs.push(parts);
   }
-  const dur = duration(u?.startedAt);
-  if (dur && wide) pills.push(...pill(Text, "magenta", [[dur, { dim: true }]]));
+
   if (a?.calls && wide) {
-    const parts = [[`${a.calls} calls`, { dim: true }]];
-    if (a.files.length) parts.unshift([`✎ ${a.files.length}`, { dim: true }]);
-    pills.push(...pill(Text, "cyan", parts));
+    const s = `${a.files.length ? `✎ ${a.files.length} · ` : ""}${a.calls} calls`;
+    segs.push([T(s, { dimColor: true })]);
   }
-  if (u?.model) pills.push(...pill(Text, "blue", [[shortModel(u.model), { dim: true }]]));
-  return pills;
+
+  const dur = duration(u?.startedAt);
+  if (dur && wide) segs.push([T(dur, { dimColor: true })]);
+  if (u?.model) segs.push([T(shortModel(u.model), { dimColor: true })]);
+
+  return segs.map((children, i) => Box({
+    key: `s${i}`,
+    flexDirection: "row",
+    flexShrink: 0,
+    children: i ? [T(" │ ", { dimColor: true }), ...children] : children,
+  }));
 }
 
-// A pill is a row of Texts on a soft tinted background (the desktop palette),
-// bright text on a dark tint; adjacent ones join seamlessly.
-const TERM_TONE = { green: "green", yellow: "yellow", red: "red", magenta: "purple", cyan: "slate", blue: "blue" };
-function pill(Text, color, parts) {
-  const [bg, fg] = TONES[TERM_TONE[color] ?? "slate"].d;
-  return parts.map(([s, o = {}]) =>
-    Text({
-      color: fg,
-      backgroundColor: bg,
-      dimColor: !!o.dim,
-      bold: !!o.bold,
-      children: ` ${s} `,
-    }));
-}
-
-function limitPill(Text, rl, columns) {
-  const p = clampPct(rl.percentUsed);
-  const color = { ok: "green", warn: "yellow", crit: "red" }[limitStatus(rl)];
-  const label = rl.kind === "five_hour" ? "5h" : rl.kind === "seven_day" ? "7d" : rl.kind;
-  const parts = [[label, {}], [bar(p, paceOf(rl)?.elapsed), {}], [`${p}%`, { bold: true }]];
-  const reset = resetsIn(rl.resetsAt);
-  if ((columns == null || columns >= 90) && reset) parts.push([reset, { dim: true }]);
-  return pill(Text, color, parts);
-}
-
-function contextPill(Text, u, columns) {
-  const tokens = u.context.tokens ?? 0;
-  const pct = ctxPct(u.context);
-  const color = pct < 50 ? "green" : pct < 75 ? "yellow" : pct < 90 ? "magenta" : "red";
-  const icon = pct < 50 ? "☀" : pct < 75 ? "☁" : pct < 90 ? "☂" : "↯";
-  const parts = [[`${icon} ${short(tokens)}`, {}], [`/ ${short(u.context.window)}`, { dim: true }], [`${pct}%`, { bold: true }]];
-  const spark = sparkline(u.history);
-  if (spark && (columns == null || columns >= 110)) parts.push([spark, {}]);
-  if (u.delta) parts.push(u.delta > 0 ? [`▲ +${short(u.delta)}`, {}] : [`▼ ${short(-u.delta)}`, {}]);
-  return pill(Text, color, parts);
+// A thin rule: the used part in the status color, the rest dim, and the pace
+// marker where the window's elapsed time sits.
+function termBar(Text, p, color, elapsed) {
+  const filled = Math.round((p / 100) * TERM_BAR);
+  const mark = elapsed == null ? -1 : Math.min(TERM_BAR - 1, Math.floor(elapsed * TERM_BAR));
+  const runs = [];
+  for (let i = 0; i < TERM_BAR; i++) {
+    const kind = i === mark ? "mark" : i < filled ? "on" : "off";
+    if (runs.at(-1)?.kind === kind) runs.at(-1).s += kind === "mark" ? "╋" : "━";
+    else runs.push({ kind, s: kind === "mark" ? "╋" : "━" });
+  }
+  const style = { mark: { bold: true }, on: { color }, off: { dimColor: true } };
+  return runs.map((r) => Text({ children: r.s, ...style[r.kind] }));
 }
 
 function bar(p, elapsed) {
@@ -382,134 +397,163 @@ function fmtMinutes(m) {
   return h < 24 ? `${h}h ${m % 60}m` : `${Math.floor(h / 24)}d ${h % 24}h`;
 }
 
-// ---- desktop: stat tiles (SVG) ---------------------------------------------
-const LABEL_W = 5.6;
-const VALUE_W = 7.4;
-const TILE_H = 28;
-const TONES = {
-  green:  { l: ["#e1efe6", "#1d3b2c", "#3f8f68"], d: ["#1d362a", "#c4e8d3", "#5fcf9a"] },
-  yellow: { l: ["#f6ecce", "#4a3a0c", "#b0820a"], d: ["#3a3216", "#f1e2a6", "#e6b830"] },
-  red:    { l: ["#f8dcd6", "#5c1f17", "#c4432d"], d: ["#47201e", "#f7cfc8", "#f47563"] },
-  purple: { l: ["#e8e2f6", "#2e2557", "#6c56c8"], d: ["#2c2748", "#d6cff5", "#9d8cf0"] },
-  blue:   { l: ["#dfe8f7", "#1b2e58", "#3a62c8"], d: ["#202c4a", "#cfdcf7", "#7b9cf2"] },
-  amber:  { l: ["#f2e8cf", "#4a3a12", "#a8800f"], d: ["#382f1d", "#efe0b5", "#d9ad3c"] },
-  slate:  { l: ["#e9e9ec", "#303036", "#767683"], d: ["#2a2a2f", "#d8d8de", "#9a9aa8"] },
+// ---- desktop: one SVG strip ------------------------------------------------
+// The whole band is a single drawing, so it never wraps into ragged rows. It
+// sits on the host's own band background: no tile fills, color only on the
+// figures that carry status. Monospace, so widths are exact without stretching.
+const H = 30;
+const MID = H / 2;
+const FONT = "ui-monospace,SFMono-Regular,Menlo,Consolas,monospace";
+const CW = 0.6; // monospace advance, em
+const SIZE = { label: 9, value: 12, aside: 10.5 };
+const TRACK = { label: 0.8, value: 0, aside: 0 };
+const BAR_W = 34;
+const PAL = {
+  // [light, dark]
+  fg: ["#1f1f24", "#ececf1"],
+  mu: ["#74747f", "#9b9ba8"],
+  lb: ["#8b8b96", "#7d7d8a"],
+  rule: ["#00000018", "#ffffff1c"],
+  track: ["#0000001a", "#ffffff1f"],
+  green: ["#23875a", "#5fd19c"],
+  yellow: ["#a87708", "#e8bd3f"],
+  red: ["#c4402b", "#ff7b67"],
+  blue: ["#3563d1", "#86a6ff"],
+  purple: ["#6a52cc", "#a996ff"],
+  cyan: ["#167f8c", "#5cc9d6"],
 };
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const textW = (kind, s) => [...s].length * (SIZE[kind] * CW + TRACK[kind]);
 
-// A compact one-line tile: small-caps label, bold value, dim aside, and an
-// optional hairline bar along the bottom edge with a pace tick.
-// parts: {text,bold,dim} | {spark}.
-function svgTile({ tone, label, aside, parts, bar, alt }) {
-  const { l, d } = TONES[tone];
-  const padX = 10;
-  const GAP = 6; // SVG collapses spaces, so parts are trimmed and spaced here
-  const items = [{ label }, ...parts, aside ? { text: aside, dim: true, small: true } : null]
-    .filter(Boolean)
-    .map((p) => (p.text == null ? p : { ...p, text: p.text.trim() }))
-    .filter((p) => p.label || p.spark || p.text);
-  const widthOf = (p) => (p.label ? p.label.length * LABEL_W : p.spark ? p.spark.length * 3 : p.text.length * (p.small ? LABEL_W + 0.4 : VALUE_W));
-  const inner = Math.ceil(items.reduce((w, p) => w + widthOf(p) + GAP, -GAP));
-  const width = inner + padX * 2;
-  const y = bar ? 16 : 18;
-  let x = padX;
-  let body = "";
-  for (const p of items) {
-    const w = widthOf(p);
-    if (p.label) {
-      body += `<text class="fg" x="${x}" y="${y}" fill="${l[1]}" opacity=".55" font-size="9" font-weight="700" letter-spacing=".5" textLength="${w.toFixed(1)}" lengthAdjust="spacingAndGlyphs">${esc(p.label)}</text>`;
-    } else if (p.spark) {
-      const lo = Math.min(...p.spark), hi = Math.max(...p.spark);
-      p.spark.forEach((v, j) => {
-        const h = 2.5 + (hi === lo ? 0.5 : (v - lo) / (hi - lo)) * 8;
-        body += `<rect class="ac" x="${x + j * 3}" y="${y + 1 - h}" width="2" height="${h.toFixed(1)}" rx="1" fill="${l[2]}" opacity="${j === p.spark.length - 1 ? 1 : 0.5}"/>`;
-      });
-    } else {
-      body += `<text class="fg" x="${x}" y="${y}" fill="${l[1]}" opacity="${p.dim ? 0.6 : 1}" font-size="${p.small ? 10 : 12}" font-weight="${p.bold ? 700 : 500}" textLength="${w.toFixed(1)}" lengthAdjust="spacingAndGlyphs">${esc(p.text)}</text>`;
-    }
-    x += w + GAP;
-  }
-  if (bar) {
-    const by = TILE_H - 6;
-    const fill = Math.max(bar.pct > 0 ? 2 : 0, (bar.pct / 100) * inner);
-    body += `<rect class="tr" x="${padX}" y="${by}" width="${inner}" height="2.5" rx="1.25" fill="${l[1]}" opacity=".14"/>`;
-    body += `<rect class="ac" x="${padX}" y="${by}" width="${fill}" height="2.5" rx="1.25" fill="${l[2]}"/>`;
-    if (bar.pace != null) {
-      const px = padX + Math.min(inner - 1, Math.max(1, bar.pace * inner));
-      body += `<rect class="fg" x="${px - 0.75}" y="${by - 2.5}" width="1.5" height="7.5" rx=".75" fill="${l[1]}"/>`;
-    }
-  }
-  const css = `.bg{fill:${d[0]}}.fg{fill:${d[1]}}.ac{fill:${d[2]}}.tr{fill:${d[1]}}`;
-  const source = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${TILE_H}" viewBox="0 0 ${width} ${TILE_H}" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">` +
-    `<style>@media (prefers-color-scheme:dark){${css}}</style>` +
-    `<rect class="bg" width="${width}" height="${TILE_H}" rx="8" fill="${l[0]}"/>${body}</svg>`;
-  return { source, width, alt };
+// item: {label} | {value, tone} | {aside, tone?} | {bar:{pct,pace,tone}} | {spark, tone} | {dot, tone}
+function itemWidth(it) {
+  if (it.label != null) return textW("label", it.label);
+  if (it.value != null) return textW("value", it.value);
+  if (it.aside != null) return textW("aside", it.aside);
+  if (it.bar) return BAR_W;
+  if (it.spark) return it.spark.length * 3.5 - 1.5;
+  if (it.dot) return 7;
+  if (it.icon) return 10;
+  return 0;
 }
 
-function desktopRow({ Svg }, { u, a, git, working, columns }) {
-  const wide = columns == null || columns >= 90;
-  const tiles = [];
-  const add = (t) => {
-    const { source, width, alt } = svgTile(t);
-    tiles.push(Svg({ source, alt, width, height: TILE_H }));
+function drawItem(it, x) {
+  const text = (kind, s, cls) => {
+    const fs = SIZE[kind];
+    const weight = kind === "value" ? 650 : kind === "label" ? 700 : 500;
+    const ls = TRACK[kind] ? ` letter-spacing="${TRACK[kind]}"` : "";
+    return `<text class="${cls}" x="${x.toFixed(1)}" y="${(MID + fs * 0.36).toFixed(1)}" font-size="${fs}" font-weight="${weight}"${ls}>${esc(s)}</text>`;
   };
+  if (it.label != null) return text("label", it.label, "lb");
+  if (it.value != null) return text("value", it.value, it.tone ?? "fg");
+  if (it.aside != null) return text("aside", it.aside, it.tone ?? "mu");
+  if (it.icon) {
+    const t = MID - 5.5, b = MID + 5.5;
+    return `<g class="mu-s" fill="none" stroke-width="1.4" stroke-linecap="round"><circle cx="${x + 2.5}" cy="${b - 1.5}" r="1.5"/><circle cx="${x + 2.5}" cy="${t + 1.5}" r="1.5"/><circle cx="${x + 8}" cy="${t + 3}" r="1.5"/><path d="M${x + 2.5} ${t + 3}V${b - 3}M${x + 8} ${t + 4.5}c0 3-5.5 2.5-5.5 5"/></g>`;
+  }
+  if (it.dot) return `<circle class="${it.tone}" cx="${x + 3.5}" cy="${MID}" r="3.5"/>`;
+  if (it.bar) {
+    const w = BAR_W, y = MID - 2;
+    const fill = it.bar.pct > 0 ? Math.max(4, (it.bar.pct / 100) * w) : 0;
+    let s = `<rect class="track" x="${x}" y="${y}" width="${w}" height="4" rx="2"/>`;
+    if (fill) s += `<rect class="${it.bar.tone}" x="${x}" y="${y}" width="${fill.toFixed(1)}" height="4" rx="2"/>`;
+    if (it.bar.pace != null) {
+      const px = x + Math.min(w - 1, Math.max(1, it.bar.pace * w));
+      s += `<rect class="fg" x="${(px - 0.75).toFixed(1)}" y="${y - 3}" width="1.5" height="10" rx=".75"/>`;
+    }
+    return s;
+  }
+  if (it.spark) {
+    const lo = Math.min(...it.spark), hi = Math.max(...it.spark);
+    return it.spark.map((v, j) => {
+      const h = 3 + (hi === lo ? 0.5 : (v - lo) / (hi - lo)) * 9;
+      const op = j === it.spark.length - 1 ? 1 : 0.45;
+      return `<rect class="${it.tone}" x="${x + j * 3.5}" y="${(MID + 6 - h).toFixed(1)}" width="2" height="${h.toFixed(1)}" rx="1" opacity="${op}"/>`;
+    }).join("");
+  }
+  return "";
+}
+
+// "1h 40m" -> "1h40m", "3d 0h" -> "3d"
+function compactSpan(s) {
+  return s.replace(/ 0[hm]$/, "").replace(" ", "");
+}
+
+function svgStrip(segments) {
+  const GAP = 5, SEP = 10, PAD = 2;
+  let x = PAD, body = "";
+  segments.forEach((items, i) => {
+    if (i) {
+      x += SEP;
+      body += `<rect class="rule" x="${x.toFixed(1)}" y="${MID - 7}" width="1" height="14"/>`;
+      x += 1 + SEP;
+    }
+    items.forEach((it, j) => {
+      if (j) x += it.tight ? 3 : GAP;
+      body += drawItem(it, x);
+      x += itemWidth(it);
+    });
+  });
+  const width = Math.ceil(x + PAD);
+  const cls = (i) => Object.entries(PAL).map(([k, v]) => `.${k}{fill:${v[i]}}.${k}-s{stroke:${v[i]}}`).join("");
+  const source = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${H}" viewBox="0 0 ${width} ${H}" font-family="${FONT}">` +
+    `<style>${cls(0)}@media (prefers-color-scheme:dark){${cls(1)}}</style>${body}</svg>`;
+  return { source, width };
+}
+
+// Two strips: the core figures (limits, context, turn) sized to fit a narrow
+// composer, and the extras (git, cost, session time), which wrap under the
+// core when the slot is narrow and sit beside it when it is wide.
+function desktopRow({ Svg }, { u, a, git, working }) {
+  const core = [];
+  const extra = [];
+  const alt = [];
 
   for (const rl of u?.rateLimits ?? []) {
     const p = clampPct(rl.percentUsed);
     const pace = paceOf(rl);
     const reset = resetsIn(rl.resetsAt);
-    const parts = [{ text: `${p}%`, bold: true }];
-    if (pace?.projected != null) parts.push({ text: `→${Math.min(999, Math.round(pace.projected))}%`, dim: true });
-    add({
-      tone: { ok: "green", warn: "yellow", crit: "red" }[limitStatus(rl)],
-      label: limitLabel(rl).toUpperCase(),
-      aside: wide && reset ? `↻${reset.replace(" ", "")}` : null,
-      parts,
-      bar: { pct: p, pace: pace?.elapsed },
-      alt: `${limitLabel(rl)} limit ${p}% used${reset ? `, resets in ${reset}` : ""}`,
-    });
+    const tone = STATUS_COLOR[limitStatus(rl)];
+    const items = [{ label: limitLabel(rl).toUpperCase() }, { bar: { pct: p, pace: pace?.elapsed, tone } }, { value: `${p}%`, tone }];
+    if (pace?.projected != null && pace.projected >= 100) items.push({ aside: `→${Math.min(999, Math.round(pace.projected))}%`, tone, tight: true });
+    if (reset) items.push({ aside: `↻${compactSpan(reset)}` });
+    core.push(items);
+    alt.push(`${limitLabel(rl)} ${p}%${reset ? ` resets in ${reset}` : ""}`);
   }
 
-  if (u?.context?.window) {
+  if (u?.context?.window && u.context.tokens) {
     const pct = ctxPct(u.context);
-    const parts = [{ text: `${pct}%`, bold: true }, { text: `${short(u.context.tokens ?? 0)}/${short(u.context.window)}`, dim: true }];
-    if (wide && u.history?.length >= 2) parts.push({ spark: u.history });
-    add({
-      tone: pct < 50 ? "blue" : pct < 75 ? "yellow" : "red",
-      label: "CTX",
-      aside: u.delta ? (u.delta > 0 ? `▲${short(u.delta)}` : `▼${short(-u.delta)}`) : null,
-      parts,
-      bar: { pct },
-      alt: `Context ${pct}% used`,
-    });
+    const tone = pct < 50 ? "blue" : pct < 75 ? "yellow" : "red";
+    const items = [{ label: "CTX" }, { bar: { pct, tone } }, { value: `${pct}%`, tone }, { aside: `${short(u.context.tokens)}/${short(u.context.window)}` }];
+    if (u.delta) items.push({ aside: u.delta > 0 ? `+${short(u.delta)}` : `−${short(-u.delta)}`, tone });
+    core.push(items);
+    alt.push(`context ${pct}%`);
   }
 
-  if (typeof u?.cost?.usd === "number") {
-    const burn = burnRate(u);
-    const parts = [{ text: `$${u.cost.usd.toFixed(2)}`, bold: true }];
-    if (u.costDelta > 0 && wide) parts.push({ text: `+$${u.costDelta.toFixed(2)}`, dim: true });
-    add({ tone: "amber", label: "COST", aside: burn ? `$${burn.toFixed(2)}/h` : null, parts, alt: `Session cost $${u.cost.usd.toFixed(2)}` });
+  if (working != null) {
+    core.push([{ dot: true, tone: "purple" }, { value: mmss(working), tone: "purple", tight: true }]);
+    alt.push(`turn ${mmss(working)}`);
   }
 
-  if (working != null) add({ tone: "purple", label: "TURN", parts: [{ text: mmss(working), bold: true }], alt: `Turn running ${mmss(working)}` });
-
-  if (git?.branch && wide) {
+  if (git?.branch) {
+    const items = [{ icon: "branch" }, { value: git.branch.length > 18 ? `${git.branch.slice(0, 17)}…` : git.branch, tight: true }];
+    if (git.dirty) items.push({ aside: `±${git.dirty}`, tone: "yellow" });
     const sync = [git.ahead && `↑${git.ahead}`, git.behind && `↓${git.behind}`].filter(Boolean).join(" ");
-    const parts = [{ text: git.branch.length > 16 ? `${git.branch.slice(0, 15)}…` : git.branch, bold: true }];
-    if (git.dirty) parts.push({ text: `±${git.dirty}`, dim: true });
-    add({ tone: git.dirty ? "yellow" : "slate", label: "GIT", aside: sync || null, parts, alt: `Git branch ${git.branch}, ${git.dirty} changed` });
+    if (sync) items.push({ aside: sync });
+    extra.push(items);
   }
-
-  if (a?.calls && wide) {
-    const parts = [{ text: `${a.calls}`, bold: true }];
-    if (a.files.length) parts.push({ text: `✎${a.files.length}`, dim: true });
-    add({ tone: "purple", label: "TOOLS", aside: null, parts, alt: `${a.calls} tool calls, ${a.files.length} files edited` });
-  }
-
+  const burn = burnRate(u);
   const dur = duration(u?.startedAt);
-  if (dur && wide) add({ tone: "slate", label: "TIME", parts: [{ text: dur, bold: true }], alt: `Session duration ${dur}` });
-  if (u?.model) add({ tone: "slate", label: "MODEL", parts: [{ text: prettyModel(u.model), bold: true }], alt: `Model ${shortModel(u.model)}` });
-  return tiles;
+  if (u?.cost?.usd > 0) extra.push([{ value: `$${u.cost.usd.toFixed(2)}` }, ...(burn ? [{ aside: `$${burn.toFixed(2)}/h` }] : [])]);
+  if (dur) extra.push([{ label: "SESSION" }, { value: dur }]);
+
+  const out = [];
+  for (const [key, segs, label] of [["core", core, alt.join(", ")], ["extra", extra, [u?.cost?.usd > 0 && `cost $${u.cost.usd.toFixed(2)}`, git?.branch && `git ${git.branch}`, dur && `session ${dur}`].filter(Boolean).join(", ")]]) {
+    if (!segs.length) continue;
+    const { source, width } = svgStrip(segs);
+    out.push(Svg({ key, source, alt: label, width, height: H }));
+  }
+  return out;
 }
 
 function prettyModel(id) {

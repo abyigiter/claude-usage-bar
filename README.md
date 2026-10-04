@@ -7,22 +7,14 @@ Works in the Claude Code CLI and the Desktop app's Code tab. Requires Claude Cod
 2.1.287 or later.
 
 ```
- 5h  ▰▰▱▱▱▱▱▱  20%  2h 40m   7d  ▰▰▰▰▰▱▱▱  58%  1d 7h   ☂ 115.5k / 1M 12% ▂▃▂ ▲+8.1k   $1.28   1h 23m   ✎ 3 · 14 calls   sonnet-5.5
+5h ━━━╋━━ 62% ↻ 1h 40m │ 7d ━━╋━━━ 38% ↻ 3d │ ctx ━━━━━━ 22% 219.9k/1M ▂▃▅▇ ▲ +21.2k │ $2.83 $13.06/h │ ● 0:42 │ ⎇ main ±3 ↑1 │ sonnet-5.5  ▾
 ```
 
-On the desktop app each figure is a stat tile (small-caps label, value, optional bar), light and dark aware. A limit tile reads `20% → 43%`: used now, projected at reset. Also: live turn timer while Claude works, git branch with dirty count and ahead/behind, burn rate (`$/h`) and last-turn cost, and a `more` button that expands the `/usage` detail inline (tool counts, edited files). Each limit bar carries a pace marker (`┃` in the terminal) showing how far into the window you are, so a fill past the marker means you are burning faster than the window allows. A limit turns yellow when your current pace would hit 100% before reset, red past 150% pace or 90% used. `/usage` says when you would hit the limit.
+Terminal: one line of segments split by a dim rule. Labels are dim, figures carry the status color, and each bar is a thin `━` rule with the pace marker `╋` at the window's elapsed time. A fill past the marker means you are burning faster than the window allows. Segments drop from right to left as the terminal narrows.
 
-Segments are pill-styled and color-coded; each hides when empty or narrow:
+Desktop: two SVG strips on the band's own background. The core strip (limits with bar and pace tick, context, live turn timer) fits a narrow composer. The extras strip (git branch, cost and burn rate, session time) sits beside it when there is room and wraps under it when there is not. Light and dark aware.
 
-- **5h / 7d** — percent of each rate-limit window used, bar and reset countdown,
-  green under 50%, yellow under 80%, red past. Empty on API-key billing.
-- **context** — weather icon for health (☀ under 50%, ☁ under 75%, ☂ under 90%,
-  ↯ past 90%), tokens of the window, percent, a sparkline of the last 12 turns,
-  and the last turn's delta (`▲ +8.1k`).
-- **$** — session cost. **duration** — session wall time.
-- **activity** — live tool-call count and edited-file count; ticks while Claude
-  works.
-- **model** — the session's resolved model id, shortened.
+A limit turns yellow when your current pace would hit 100% before reset, and red past 150% pace or 90% used. `▾` expands the `/usage` detail inline (tool counts, edited files). Zero cost and empty context are hidden.
 
 Type `/usage` for the same figures as text in the transcript.
 

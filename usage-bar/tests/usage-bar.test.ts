@@ -55,7 +55,7 @@ describe("usage-bar", () => {
     expect(await ui.find({ type: "Text", text: /58%/ })).toBeDefined();
     expect(await ui.find({ type: "Text", text: /1d 7h/ })).toBeDefined();
     expect(await ui.find({ type: "Text", text: /95%/ })).toBeDefined();
-    expect(await ui.find({ type: "Text", text: /↯/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /954\.2k\/1M/ })).toBeDefined();
     expect(await ui.find({ type: "Text", text: /\$4\.32/ })).toBeDefined();
     expect(await ui.find({ type: "Text", text: /1h 23m/ })).toBeDefined();
     expect(await ui.find({ type: "Text", text: /sonnet-5\.5/ })).toBeDefined();
@@ -117,12 +117,12 @@ describe("usage-bar", () => {
     await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
     const ui = await mount($);
     expect(await ui.find({ type: "Text", text: /91%/ })).toBeDefined();
-    expect(await ui.find({ type: "Text", text: /\$0\.00/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /\$0\.00/ })).toBeUndefined(); // zero cost is noise
     expect(await ui.find({ type: "Text", text: /opus-4\.6/ })).toBeDefined();
     await ui.unmount();
   });
 
-  test("desktop draws SVG pills with a pace marker", async ($, on) => {
+  test("desktop draws one SVG strip", async ($, on) => {
     stubUsage($, on);
     on("session.start", ($, e) => ({ cwd: e.cwd }));
     await $.session.start({ surface: "desktop", isInteractive: true, cwd: "/work" } as any);
@@ -132,7 +132,11 @@ describe("usage-bar", () => {
       component: "AbovePrompt",
       props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120 },
     } as any);
-    expect(await ui.find({ type: "Svg" })).toBeDefined();
+    const svg: any = await ui.find({ type: "Svg" });
+    expect(svg).toBeDefined();
+    expect(svg.props.source).toContain("20%");
+    expect(svg.props.source).not.toContain("textLength");
+    expect(svg.props.alt).toContain("5h 20%");
     await ui.unmount();
   });
 
