@@ -11,6 +11,8 @@ export type UsageReading = {
   history?: number[];
 };
 export type UsageActivity = { calls: number; files: string[]; tools?: Record<string, number> };
+export type UsageTurn = { ms: number; usd: number | null; in: number; out: number; cr: number; cw: number };
+export type UsageContextMap = { at: number; cats: { name: string; tokens: number; kind: string }[] };
 export type UsageGit = { branch?: string; dirty?: number; ahead?: number; behind?: number };
 
 declare module "claude-code" {
@@ -21,6 +23,8 @@ declare module "claude-code" {
       git?: UsageGit;
       turn?: { startedAt: number; tick: number };
       ui?: { expanded: boolean };
+      turns?: UsageTurn[];
+      ctxmap?: UsageContextMap;
     };
   }
 }
