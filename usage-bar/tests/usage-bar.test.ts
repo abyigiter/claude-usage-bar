@@ -222,7 +222,6 @@ describe("usage-bar", () => {
     expect(await ui.find({ type: "Text", text: /−68/ })).toBeDefined();
     expect(await ui.find({ type: "Text", text: /#144/ })).toBeDefined();
     expect(await ui.find({ type: "Text", text: /✗ ci/ })).toBeDefined();
-    expect(await ui.find({ type: "Link" } as any)).toBeDefined();
     await ui.unmount();
     const desk = await $.ui.mount({ plugin: "usage-bar", surface: "desktop", component: "AbovePrompt", props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120 } } as any);
     const svgs: any[] = await desk.findAll({ type: "Svg" } as any);

@@ -1,37 +1,19 @@
 # usage-bar
 
-A Claude Code mod: a live band above the prompt showing your 5h and 7d rate-limit
-usage with reset countdowns, the context window, and session cost.
+A Claude Code mod: a live band above the prompt with your context window,
+spend, rate limits, git state and pull request, plus a `▾ more` panel that
+shows where the context and the money went.
 
-Works in the Claude Code CLI and the Desktop app's Code tab. Requires Claude Code
-2.1.287 or later.
+Works in the Claude Code CLI and the desktop app's Code tab. Requires Claude
+Code 2.1.287 or later.
 
-```
- 5h ━━━╋━━ 62% ↻ 1h 40m   ctx ━━━━━━ 14% 138.8k/1M ▂▃▅▇ ▲ +5.1k   $2.32 $10.71/h   ● 0:42   git main +421 −68 ?1 ↑1   PR #144 open ✓ approved ● ci   30 calls ✎ 2   13m   opus-5.5   ▾ more
-```
+![Desktop header](docs/desktop-header.png)
 
-Terminal: tinted chips, each glued into one unit so the row wraps between chips, never through one. Bars are thin `━` rules with the pace marker `╋` at the window's elapsed time; a fill past the marker means you are burning faster than the window allows.
+![Desktop detail panel](docs/desktop-panel.png)
 
-Desktop: each figure is a tinted pill in its category's color (limits by status, context blue, turn purple, git cyan, PR by state, cost amber, today green), turning yellow or red as a budget or limit nears. Pills flow in one row and wrap as units. Detail cards carry matching tints, and cards with nothing to show are left out. Light and dark aware.
+![Terminal header](docs/terminal-header.png)
 
-Git shows lines added and removed against HEAD (`+421 −68`, staged and unstaged), untracked files (`?1`), and ahead/behind. When the GitHub CLI (`gh`) is installed and signed in, the branch's pull request shows too: number, state, review decision and CI (`✓` pass, `✗` fail, `●` running), colored by what needs attention. It is looked up again on a branch switch or every 5 minutes.
-
-Budgets: `/budget 10` sets a session budget, `/budget day 50` a daily one, `/budget off [day|session]` clears. A toast fires at 80% and at 100% of each, and once when your burn rate will cross the session budget within 15 minutes. The cost figure turns yellow, then red.
-
-Daily ledger: each session keeps its own running total per local day in the plugin store (kept 30 days); today is the sum over sessions. A session that began today counts in full, one carried over from an earlier day from its first reading today. The band shows today's spend, `/usage` today's turns and the last 7 days.
-
-PR links: on desktop the app draws its own clickable PR bar above the band, so the PR pill only shows status; in the terminal `#144 ↗` follows the chip. When checks fail, the detail panel lists each one as a link to its CI page. While CI runs the PR is re-checked every minute, and a toast says when it passes or fails.
-
-`▾ more` opens the detail panel (desktop: four cards in one row; terminal: aligned rows):
-
-- **Context**: stacked bar by `/context` category (messages, tools, system prompt, memory, skills), and when auto-compact kicks in, in tokens and in turns at your average growth.
-- **Spend**: total, burn rate, last turn, average per turn, a bar per turn.
-- **Turns**: count, average and longest duration, prompt cache hit rate, tokens written, a bar per turn.
-- **Tools**: top five tools with bars (MCP names shortened), edited files, git, model, session time.
-
-A limit turns yellow when your current pace would hit 100% before reset, and red past 150% pace or 90% used.
-
-Type `/usage` for the same figures as text in the transcript.
+![Terminal detail panel](docs/terminal-panel.webp)
 
 ## Install
 
@@ -41,12 +23,73 @@ Type `/usage` for the same figures as text in the transcript.
 /reload-plugins
 ```
 
+Update later with `/plugin marketplace update abyigiter-mods`, then
+`/reload-plugins`.
+
+## The header
+
+Each figure is a pill colored by what it is, turning yellow or red when it
+needs attention. Pills flow in one row and wrap as units.
+
+| Pill | Shows |
+| --- | --- |
+| `5H` / `7D` | Rate-limit use with a bar, a pace tick at the window's elapsed time, and the reset countdown. Yellow when your pace would hit 100% before reset, red past 150% pace or 90% used. Hidden off a subscription. |
+| `CTX` | Context window fill, tokens, and the last turn's growth. |
+| `● 0:42` | A live timer while Claude works. |
+| git | Branch, lines added and removed against HEAD (`+421 −68`), untracked files (`?1`), ahead and behind. |
+| PR | The branch's pull request through `gh`: state, review, CI (`✓` pass, `✗` fail, `●` running). Re-checked every 5 minutes, every minute while CI runs, with a toast when it finishes. Needs the GitHub CLI signed in. |
+| `COST` | Session spend and burn rate (`$/h`), against your budget when one is set. |
+| `TODAY` | Spend across every session today, and the last 7 days. |
+
+In the terminal the same figures are tinted chips.
+
+## The detail panel
+
+`▾ more` opens four cards on desktop (aligned rows in the terminal). Cards
+with nothing to show yet are left out.
+
+- **Context**: a stacked bar by `/context` category (messages, tools, MCP,
+  memory, skills) and how many turns are left before auto-compact at your
+  average growth.
+- **Spend**: total, today, last turn, average per turn, a bar per turn.
+- **Turns**: count, average and longest duration, prompt cache hit rate,
+  tokens written, a bar per turn.
+- **Tools**: the top five tools (MCP names shortened). Failing CI checks are
+  listed under the panel.
+
+## Budgets
+
+```
+/budget 10          session budget of $10
+/budget day 50      daily budget of $50
+/budget off         clear both (or /budget off day, /budget off session)
+/budget             show where you stand
+```
+
+A toast fires at 80% and at 100% of each budget, and once when your burn
+rate will cross the session budget within 15 minutes.
+
+## Today's spend
+
+Each session keeps its own running total per local day in the plugin store
+(kept 30 days); today is the sum over sessions. A session that began today
+counts in full, one carried over from an earlier day counts from its first
+reading today.
+
+## `/usage`
+
+Prints everything above as text: limits with pace, context, session cost,
+today and the last 7 days, budgets, turns and cache hit rate, tools, edited
+files, git and PR with failing checks, model.
+
 ## Building it
 
-Standard mod plugin: `.claude-plugin/plugin.json`, `hooks/hooks.json`, one hooks
-module. Readings come from `$.session.usage()`, refreshed on `session.measure`
-(fires when a figure moves), on `turn.complete`, and once a minute on a timer so
-the reset countdowns stay fresh. Rendered on `ui.render { component: "AbovePrompt" }`,
-state kept in `$.state` so it survives hot reloads.
+A standard mod plugin: `.claude-plugin/plugin.json`, `hooks/hooks.json`, one
+hooks module. Readings come from `$.session.usage()` on `session.measure`,
+`turn.complete` and a one-minute timer; the context breakdown from
+`$.session.usage({ breakdown: "summary" })`, a local estimate. The header and
+cards on desktop are SVG drawings; the terminal draws Ink text. State lives in
+`$.state` so it survives hot reloads; budgets and the day totals in
+`$.store`.
 
 Tests: `claude plugin test ./usage-bar`.

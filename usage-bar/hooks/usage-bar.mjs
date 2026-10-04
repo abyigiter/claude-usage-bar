@@ -121,7 +121,7 @@ export function register(on) {
     };
     const els = $.ui.resolve(e);
     const isDesktop = e.surface === "desktop";
-    const { Box, Button, Link } = els;
+    const { Box, Button } = els;
     const expanded = !!ui?.expanded;
     const more = Button({
       key: "more",
@@ -143,7 +143,6 @@ export function register(on) {
     } else {
       const row = terminalRow(els, view);
       if (!row.length) return next(e);
-      if (git?.pr?.url) row.push(Link({ href: git.pr.url, label: `#${git.pr.number} ↗` }));
       header = Box({ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 1, paddingX: 1, children: [...row, more] });
     }
     const body = [header];
@@ -155,19 +154,17 @@ export function register(on) {
       body.push(isDesktop
         ? Box({ key: "details-box", flexDirection: "column", paddingX: 1, paddingTop: 1, children: [desktopDetails(els, d, git, u)] })
         : terminalDetails(els, d, git, u, view.columns));
-      const links = prLinks(els, git?.pr);
+      const links = failingChecks(els, git?.pr);
       if (links) body.push(links);
     }
     return Box({ flexDirection: "column", children: body });
   });
 }
 
-// Failing checks as links to their CI pages, under the detail panel. Only
-// when something failed: the PR itself is already the header's ↗.
-function prLinks({ Box, Text, Link }, pr) {
+// Failing checks by name, under the detail panel; only when something failed.
+function failingChecks({ Box, Text }, pr) {
   if (!pr?.failing?.length) return null;
-  const kids = [Text({ children: "✗ failing ", color: "red", bold: true })];
-  pr.failing.forEach((c, i) => kids.push(...(i ? [Text({ children: " · ", dimColor: true })] : []), Link({ href: c.url, label: c.name })));
+  const kids = [Text({ children: "✗ failing ", color: "red", bold: true }), Text({ children: pr.failing.map((c) => c.name).join(" · "), dimColor: true })];
   return Box({ key: "pr-links", flexDirection: "row", flexWrap: "wrap", alignItems: "center", paddingX: 1, children: kids });
 }
 
