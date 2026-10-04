@@ -15,7 +15,13 @@ export function register(on) {
 
   on("session.measure", async ($, e, next) => {
     const result = await next(e);
-    await $.state.set(READING, { context: e.context, rateLimits: e.rateLimits, cost: e.cost });
+    const { value: prev } = await $.state.get(READING);
+    await $.state.set(READING, mergeReading(prev, {
+      context: e.context,
+      rateLimits: e.rateLimits,
+      cost: e.cost,
+      model: prev?.model,
+    }));
     return result;
   });
 
@@ -36,7 +42,20 @@ export function register(on) {
 
 async function takeReading($) {
   const { startedAt, ...rest } = await $.session.usage();
-  await $.state.set(READING, rest);
+  const { value: prev } = await $.state.get(READING);
+  await $.state.set(READING, mergeReading(prev, { ...rest, model: await $.session.model() }));
+}
+
+// Delta is how much the last turn added to context. Both session.measure and
+// turn.complete refresh the reading in one turn, so only move the delta when
+// the token count actually changed; otherwise keep the previous one.
+function mergeReading(prev, next) {
+  const prevTokens = prev?.context?.tokens;
+  const tokens = next.context?.tokens;
+  if (tokens == null || prevTokens == null || tokens === prevTokens) {
+    return { ...next, prevTokens: prev?.prevTokens, delta: prev?.delta };
+  }
+  return { ...next, prevTokens, delta: tokens - prevTokens };
 }
 
 function band(Box, Text, u, columns, next, e) {
@@ -46,15 +65,11 @@ function band(Box, Text, u, columns, next, e) {
     const rl = u.rateLimits?.find((r) => r.kind === kind);
     if (rl) parts.push(limitPart(Text, rl, compact));
   }
-  if (u.context?.window) {
-    parts.push([
-      Text({ color: "blue", children: short(u.context.tokens ?? 0) }),
-      Text({ dimColor: true, children: ` / ${short(u.context.window)} ctx` }),
-    ]);
-  }
+  if (u.context?.window) parts.push(contextPart(Text, u.context, u.delta));
   if (typeof u.cost?.usd === "number") {
     parts.push([Text({ color: "yellow", children: `$${u.cost.usd.toFixed(2)}` })]);
   }
+  if (u.model) parts.push([Text({ dimColor: true, children: shortModel(u.model) })]);
   if (parts.length === 0) return next(e);
   const children = [];
   parts.forEach((p, i) => {
@@ -89,6 +104,32 @@ function resetsIn(resetsAt) {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ${m % 60}m`;
   return `${Math.floor(h / 24)}d ${h % 24}h`;
+}
+
+function contextPart(Text, ctx, delta) {
+  const tokens = ctx.tokens ?? 0;
+  const pct = ctx.percent ?? Math.round((tokens / ctx.window) * 100);
+  const color = pct < 75 ? "green" : pct < 90 ? "yellow" : "red";
+  const parts = [
+    Text({ color, children: short(tokens) }),
+    Text({ dimColor: true, children: ` / ${short(ctx.window)} ctx ${pct}%` }),
+  ];
+  if (pct >= 90) parts.push(Text({ color: "red", bold: true, children: " ↯" }));
+  if (delta) {
+    parts.push(
+      delta > 0
+        ? Text({ color: "red", children: ` ▲ +${short(delta)}` })
+        : Text({ color: "green", children: ` ▼ ${short(-delta)}` }),
+    );
+  }
+  return parts;
+}
+
+function shortModel(id) {
+  return String(id)
+    .replace(/^claude-/, "")
+    .replace(/-\d{8}$/, "")
+    .replace(/-(\d+)-(\d+)$/, "-$1.$2");
 }
 
 function short(n) {

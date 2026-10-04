@@ -23,8 +23,12 @@ Works in the Claude Code CLI and the Desktop app's Code tab. Requires Claude Cod
 - **5h / 7d** — percent of each rate-limit window used, with a bar and time until
   it resets. Green under 50%, yellow under 80%, red past that. Empty when you're
   on API-key billing (no subscription windows to report).
-- **ctx** — tokens used of the context window.
+- **ctx** — tokens used of the context window, with percent, turning yellow past 75%
+  and red with a `↯` warning past 90%, plus how much the last turn added (`▲ +8.1k`).
 - **$** — session cost so far.
+- **model** — the session's resolved model id, shortened.
+- No segment shows when its data is absent (rate limits need a subscription and
+  at least one API response; model appears once `$.session.model()` resolves).
 
 ## Building it
 
