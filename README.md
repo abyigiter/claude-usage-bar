@@ -20,7 +20,7 @@ Budgets: `/budget 10` sets a session budget, `/budget day 50` a daily one, `/bud
 
 Daily ledger: each session keeps its own running total per local day in the plugin store (kept 30 days); today is the sum over sessions. A session that began today counts in full, one carried over from an earlier day from its first reading today. The band shows today's spend, `/usage` today's turns and the last 7 days.
 
-PR links: `#144 ↗` opens the pull request. In the detail panel each failing check is its own link. While CI runs the PR is re-checked every minute, and a toast says when it passes or fails.
+PR links: `#144 ↗` opens the pull request. When checks fail, the detail panel lists each one as a link to its CI page. While CI runs the PR is re-checked every minute, and a toast says when it passes or fails.
 
 `▾ more` opens the detail panel (desktop: four cards in one row; terminal: aligned rows):
 

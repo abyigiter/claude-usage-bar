@@ -159,14 +159,13 @@ export function register(on) {
   });
 }
 
-// The PR and each failing check as links (an anchor on desktop, a terminal
-// hyperlink), under the detail panel.
+// Failing checks as links to their CI pages, under the detail panel. Only
+// when something failed: the PR itself is already the header's ↗.
 function prLinks({ Box, Text, Link }, pr) {
-  if (!pr?.url) return null;
-  const kids = [Text({ children: "PR ", bold: true, color: "cyan" }), Link({ href: pr.url, label: `#${pr.number} ${pr.state} ↗` })];
-  for (const c of pr.failing ?? []) kids.push(Text({ children: "  ✗ ", color: "red" }), Link({ href: c.url, label: c.name }));
-  if (pr.pending) kids.push(Text({ children: `  ● ${pr.pending} running`, color: "yellow" }));
-  return Box({ key: "pr-links", flexDirection: "row", flexWrap: "wrap", paddingX: 2, paddingTop: 1, children: kids });
+  if (!pr?.failing?.length) return null;
+  const kids = [Text({ children: "✗ failing ", color: "red", bold: true })];
+  pr.failing.forEach((c, i) => kids.push(...(i ? [Text({ children: " · ", dimColor: true })] : []), Link({ href: c.url, label: c.name })));
+  return Box({ key: "pr-links", flexDirection: "row", flexWrap: "wrap", alignItems: "center", paddingX: 2, children: kids });
 }
 
 // One record per main-loop turn: how long, what it cost, what it read and wrote.
@@ -1205,7 +1204,6 @@ function desktopDetails({ Svg }, d, git, u) {
   const fy = CARD_H + 19;
   const foot = [
     d.files.length && ["EDITED", d.files.join(", ")],
-    git?.pr && ["PR", prText(git.pr).replace(/^PR /, "")],
     u?.model && ["MODEL", prettyModel(u.model)],
     d.session && ["SESSION", d.session],
   ].filter(Boolean);
