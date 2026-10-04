@@ -317,6 +317,13 @@ function svgPill(tone, items, label) {
     } else if (it.sep) {
       body += `<rect class="fg" x="${x}" y="${mid - 8}" width="1" height="16" fill="${l[1]}" opacity=".18"/>`;
       x += 1;
+    } else if (it.spark) {
+      const vals = it.spark, lo = Math.min(...vals), hi = Math.max(...vals);
+      vals.forEach((v, j) => {
+        const h = 3 + (hi === lo ? 0.5 : (v - lo) / (hi - lo)) * 11;
+        body += `<rect class="ac" x="${x + j * 4}" y="${mid + 7 - h}" width="3" height="${h.toFixed(1)}" rx="1" fill="${l[2]}" opacity="${j === vals.length - 1 ? 1 : 0.55}"/>`;
+      });
+      x += vals.length * 4 - 1;
     } else if (it.bar != null) {
       const w = 52, h = 6, y = mid - h / 2;
       const fill = Math.max(it.bar > 0 ? h : 0, (it.bar / 100) * w);
@@ -364,8 +371,7 @@ function desktopBand({ Box, Svg }, u, a, columns, next, e) {
     const pct = ctxPct(u.context);
     const tone = pct < 50 ? "blue" : pct < 75 ? "yellow" : "red";
     const items = [{ icon: "layers" }, { text: short(u.context.tokens ?? 0) }, { text: `/ ${short(u.context.window)}`, dim: true }, { text: `${pct}%`, bold: true }];
-    const spark = sparkline(u.history);
-    if (spark && wide) items.push({ text: spark, dim: true });
+    if (wide && u.history?.length >= 2) items.push({ spark: u.history });
     if (u.delta) items.push({ text: u.delta > 0 ? `▲ +${short(u.delta)}` : `▼ ${short(-u.delta)}`, dim: true });
     add(tone, items, `Context ${pct}% used`);
   }
