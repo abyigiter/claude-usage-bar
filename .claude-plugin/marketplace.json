@@ -1,0 +1,5 @@
+{
+  "name": "abyigiter-mods",
+  "owner": { "name": "Bugra Yigiter", "url": "https://github.com/abyigiter" },
+  "plugins": [{ "name": "usage-bar", "source": "./usage-bar" }]
+}
