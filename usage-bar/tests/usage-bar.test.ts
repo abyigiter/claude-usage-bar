@@ -24,11 +24,18 @@ function stubUsage($, on) {
   on("session.model", () => ({ value: "claude-sonnet-5-5-20261001" }));
   on("command.register", ($, e) => ({ value: { command: e.command } }));
   on("clock.every", () => ({ value: {} }));
+  stubStore(on);
   return {
     setTokens: (t) => {
       tokens = t;
     },
   };
+}
+
+function stubStore(on) {
+  const kv = new Map();
+  on("store.get", ($, e) => ({ value: kv.get(e.key) }));
+  on("store.set", ($, e) => { kv.set(e.key, e.value); return { value: undefined }; });
 }
 
 async function mount($, plugin = "usage-bar") {
@@ -202,7 +209,7 @@ describe("usage-bar", () => {
       const cmd = argv.join(" ");
       if (cmd.startsWith("git status")) return { value: { exitCode: 0, stdout: "## feat/x...origin/feat/x\n M a.go\n?? b.go\n", stderr: "" } };
       if (cmd.startsWith("git diff")) return { value: { exitCode: 0, stdout: " 2 files changed, 421 insertions(+), 68 deletions(-)\n", stderr: "" } };
-      if (cmd.startsWith("gh pr view")) return { value: { exitCode: 0, stdout: JSON.stringify({ number: 144, state: "OPEN", isDraft: false, reviewDecision: "APPROVED", statusCheckRollup: [{ conclusion: "SUCCESS" }, { conclusion: "FAILURE" }] }), stderr: "" } };
+      if (cmd.startsWith("gh pr view")) return { value: { exitCode: 0, stdout: JSON.stringify({ number: 144, url: "https://github.com/o/r/pull/144", state: "OPEN", isDraft: false, reviewDecision: "APPROVED", statusCheckRollup: [{ conclusion: "SUCCESS" }, { name: "lint", conclusion: "FAILURE", detailsUrl: "https://ci/lint" }] }), stderr: "" } };
       return { value: { exitCode: 1, stdout: "", stderr: "" } };
     });
     on("session.start", ($, e) => ({ cwd: e.cwd }));
@@ -212,8 +219,42 @@ describe("usage-bar", () => {
     expect(await ui.find({ type: "Text", text: /−68/ })).toBeDefined();
     expect(await ui.find({ type: "Text", text: /#144/ })).toBeDefined();
     expect(await ui.find({ type: "Text", text: /✗ ci/ })).toBeDefined();
+    expect(await ui.find({ type: "Link" } as any)).toBeDefined();
     await ui.unmount();
     const r = await $.command.run({ command: "usage" } as any);
     expect(r.text).toContain("PR #144 open approved ✗ checks");
+    expect(r.text).toContain("✗ lint  https://ci/lint");
+  });
+
+  test("budgets toast at 80% and the ledger counts today's spend", async ($, on) => {
+    let cost = 4.32;
+    stubStore(on);
+    on("session.model", () => ({ value: "claude-sonnet-5-5" }));
+    on("command.register", ($, e) => ({ value: { command: e.command } }));
+    on("clock.every", () => ({ value: {} }));
+    on("session.usage", () => ({ value: { startedAt: Date.now() - 60 * 60_000, context: { tokens: 1000, window: 200_000 }, rateLimits: [], cost: { usd: cost } } }));
+    const toasts: string[] = [];
+    on("ui.toast", ($, e) => { toasts.push(e.text); });
+    on("session.start", ($, e) => ({ cwd: e.cwd }));
+    on("turn.complete", () => ({ text: "" }));
+    on("prompt.submit", ($, e) => ({ text: e.text }));
+    await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
+    const set = await $.command.run({ command: "budget", args: "5" } as any);
+    expect(set.text).toContain("Session budget: $4.32 of $5.00 (86%)");
+    expect(toasts.join("\n")).toContain("86% of the $5.00 budget");
+    await $.prompt.submit({ text: "go" } as any);
+    cost = 5.5;
+    await $.turn.complete({ reason: "answer", answer: "ok", durationMs: 1000 } as any);
+    expect(toasts.join("\n")).toContain("over the $5.00 budget");
+    const r = await $.command.run({ command: "usage" } as any);
+    expect(r.text).toContain("Today: $1.18 over 1 turn");
+    const ui = await mount($);
+    expect(await ui.find({ type: "Text", text: /\/ \$5/ })).toBeDefined();
+    await ui.unmount();
+    for (const surface of ["terminal", "desktop"] as const) {
+      const m = await $.ui.mount({ plugin: "usage-bar", surface, component: "AbovePrompt", props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 120 } } as any);
+      expect(m).toBeDefined();
+      await m.unmount();
+    }
   });
 });

@@ -13,7 +13,12 @@ export type UsageReading = {
 export type UsageActivity = { calls: number; files: string[]; tools?: Record<string, number> };
 export type UsageTurn = { ms: number; usd: number | null; in: number; out: number; cr: number; cw: number };
 export type UsageContextMap = { at: number; cats: { name: string; tokens: number; kind: string }[] };
-export type UsagePr = { number: number; state: string; review: "approved" | "changes" | null; checks: "pass" | "fail" | "pending" | null };
+export type UsagePr = {
+  number: number;
+  url?: string;
+  failing?: { name: string; url: string }[];
+  pending?: number;
+  state: string; review: "approved" | "changes" | null; checks: "pass" | "fail" | "pending" | null };
 export type UsageGit = {
   branch?: string;
   dirty?: number;
@@ -36,6 +41,9 @@ declare module "claude-code" {
       ui?: { expanded: boolean };
       turns?: UsageTurn[];
       ctxmap?: UsageContextMap;
+      budget?: { session?: number; day?: number };
+      ledger?: { date: string; today: number; todayTurns: number; week: number; days: number[] };
+      alerts?: { session?: number; day?: number; pace?: boolean };
     };
   }
 }

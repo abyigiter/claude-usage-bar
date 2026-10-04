@@ -10,6 +10,9 @@ const TURN = { plugin: "usage-bar", key: "turn" };
 const UI = { plugin: "usage-bar", key: "ui" };
 const TURNS = { plugin: "usage-bar", key: "turns" };
 const CTXMAP = { plugin: "usage-bar", key: "ctxmap" };
+const BUDGET = { plugin: "usage-bar", key: "budget" };
+const LEDGER = { plugin: "usage-bar", key: "ledger" };
+const ALERTS = { plugin: "usage-bar", key: "alerts" };
 const BAR_FILLED = "▰";
 const BAR_EMPTY = "▱";
 const BAR_WIDTH = 8;
@@ -17,6 +20,8 @@ const BARS = "▁▂▃▄▅▆▇█";
 const HISTORY = 12;
 const TURN_LOG = 24;
 const PR_TTL = 5 * 60_000;
+const PR_TTL_PENDING = 60_000; // while CI runs, so its result toasts soon after
+const LEDGER_DAYS = 30;
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 let commandName;
 let turnStart = 0; // ms, 0 when no turn is running
@@ -25,10 +30,17 @@ export function register(on) {
   on("session.start", async ($, e, next) => {
     const result = await next(e);
     await takeReading($);
+    await $.state.set(BUDGET, (await storeGet($, "budget")) ?? {});
+    await refreshLedger($);
     $.clock.every(60_000, () => takeReading($)); // keep reset countdowns fresh
     $.clock.every(1000, () => { // live turn timer: redraw each second while a turn runs
       if (turnStart && Date.now() - turnStart < 2 * 3_600_000) $.state.get(TURN).then(({ value: t }) => $.state.set(TURN, { ...t, startedAt: turnStart, tick: Date.now() }));
     });
+    try {
+      await $.command.register({ name: "budget", description: "Spend budget: /budget 10 (session), /budget day 50, /budget off" });
+    } catch {
+      // taken by another plugin
+    }
     for (const name of ["usage", "context"]) {
       try {
         await $.command.register({ name, description: "Rate limits, context forecast, cost, and activity" });
@@ -43,6 +55,7 @@ export function register(on) {
 
   on("command.run", { command: "usage" }, ($, e, next) => answerUsage($, e, next));
   on("command.run", { command: "context" }, ($, e, next) => answerUsage($, e, next));
+  on("command.run", { command: "budget" }, ($, e) => answerBudget($, e));
 
   on("prompt.submit", async ($, e, next) => {
     turnStart = Date.now();
@@ -82,6 +95,7 @@ export function register(on) {
       const { value: after } = await $.state.get(READING);
       const { value: turn } = await $.state.get(TURN);
       await logTurn($, e, turn?.costAt, after);
+      await checkBudget($);
       const { value: ui } = await $.state.get(UI);
       if (ui?.expanded) await takeBreakdown($);
     }
@@ -97,18 +111,18 @@ export function register(on) {
     const { value: git } = await $.state.get(GIT);
     const { value: turn } = await $.state.get(TURN);
     const { value: ui } = await $.state.get(UI);
+    const { value: budget = {} } = await $.state.get(BUDGET);
+    const { value: ledger } = await $.state.get(LEDGER);
     const view = {
-      u, a, git,
+      u, a, git, budget, ledger,
       working: e.props.isWorking && turn?.startedAt ? Date.now() - turn.startedAt : null,
       columns: e.props.bodyColumns,
     };
     const els = $.ui.resolve(e);
     const isDesktop = e.surface === "desktop";
-    const row = isDesktop ? desktopRow(els, view) : terminalRow(els, view);
-    if (!row.length) return next(e);
-    const { Box, Text, Button } = els;
+    const { Box, Button, Link } = els;
     const expanded = !!ui?.expanded;
-    row.push(Button({
+    const more = Button({
       key: "more",
       label: expanded ? "▴ less" : "▾ more",
       plain: true,
@@ -117,16 +131,40 @@ export function register(on) {
         await $.state.set(UI, { expanded: !expanded });
         if (!expanded) await takeBreakdown($);
       },
-    }));
-    const body = [Box({ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 1, rowGap: isDesktop ? 1 : 0, paddingX: 1, children: row })];
+    });
+    let header;
+    if (isDesktop) {
+      const { left, right } = desktopRow(els, view);
+      if (!left.length && !right.length) return next(e);
+      const side = (key, children) => Box({ key, flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 1, children });
+      header = Box({ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", columnGap: 2, paddingX: 1, children: [side("left", left), side("right", [...right, more])] });
+    } else {
+      const row = terminalRow(els, view);
+      if (!row.length) return next(e);
+      if (git?.pr?.url) row.push(Link({ href: git.pr.url, label: `#${git.pr.number} ↗` }));
+      header = Box({ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 1, paddingX: 1, children: [...row, more] });
+    }
+    const body = [header];
     if (expanded) {
       const { value: turns = [] } = await $.state.get(TURNS);
       const { value: map } = await $.state.get(CTXMAP);
-      const d = insights(u, a, turns, map);
+      const d = { ...insights(u, a, turns, map), budget, ledger };
       body.push(isDesktop ? desktopDetails(els, d, git, u) : terminalDetails(els, d, git, u, view.columns));
+      const links = prLinks(els, git?.pr);
+      if (links) body.push(links);
     }
     return Box({ flexDirection: "column", children: body });
   });
+}
+
+// The PR and each failing check as links (an anchor on desktop, a terminal
+// hyperlink), under the detail panel.
+function prLinks({ Box, Text, Link }, pr) {
+  if (!pr?.url) return null;
+  const kids = [Text({ children: "PR ", bold: true, color: "cyan" }), Link({ href: pr.url, label: `#${pr.number} ${pr.state} ↗` })];
+  for (const c of pr.failing ?? []) kids.push(Text({ children: "  ✗ ", color: "red" }), Link({ href: c.url, label: c.name }));
+  if (pr.pending) kids.push(Text({ children: `  ● ${pr.pending} running`, color: "yellow" }));
+  return Box({ key: "pr-links", flexDirection: "row", flexWrap: "wrap", paddingX: 2, paddingTop: 1, children: kids });
 }
 
 // One record per main-loop turn: how long, what it cost, what it read and wrote.
@@ -145,6 +183,129 @@ async function logTurn($, e, costAt, after) {
   };
   const { value: turns = [] } = await $.state.get(TURNS);
   await $.state.set(TURNS, [...turns, rec].slice(-TURN_LOG));
+  if (usd != null) await addToLedger($, usd);
+}
+
+// $.store, failing soft: a host without it keeps budgets and the ledger off.
+async function storeGet($, key) {
+  try {
+    return await $.store.get(key);
+  } catch {
+    return undefined;
+  }
+}
+
+async function storeSet($, key, value) {
+  try {
+    await $.store.set(key, value);
+  } catch {
+    // no store on this host
+  }
+}
+
+// ---- budgets and the daily ledger ----------------------------------------------
+// The ledger lives in $.store, shared by every session: spend and turns per
+// local day. The state copy is what the drawing reads.
+function dayKey(t = Date.now()) {
+  const d = new Date(t);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+async function addToLedger($, usd) {
+  const book = (await storeGet($, "ledger")) ?? {};
+  const k = dayKey();
+  book[k] = { usd: (book[k]?.usd ?? 0) + usd, turns: (book[k]?.turns ?? 0) + 1 };
+  const keep = Object.keys(book).sort().slice(-LEDGER_DAYS);
+  await storeSet($, "ledger", Object.fromEntries(keep.map((d) => [d, book[d]])));
+  await refreshLedger($);
+}
+
+async function refreshLedger($) {
+  const book = (await storeGet($, "ledger")) ?? {};
+  const days = [...Array(7)].map((_, i) => dayKey(Date.now() - i * 86_400_000));
+  await $.state.set(LEDGER, {
+    date: days[0],
+    today: book[days[0]]?.usd ?? 0,
+    todayTurns: book[days[0]]?.turns ?? 0,
+    week: days.reduce((s, d) => s + (book[d]?.usd ?? 0), 0),
+    days: days.reverse().map((d) => book[d]?.usd ?? 0),
+  });
+}
+
+async function answerBudget($, e) {
+  const [a, b] = String(e.args ?? "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const budget = (await storeGet($, "budget")) ?? {};
+  const amount = (v) => (v != null && Number.isFinite(+v.replace("$", "")) && +v.replace("$", "") > 0 ? +v.replace("$", "") : null);
+  if (a === "off" || a === "clear") {
+    if (b === "day") delete budget.day;
+    else if (b === "session") delete budget.session;
+    else { delete budget.day; delete budget.session; }
+  } else if (a === "day" && amount(b)) budget.day = amount(b);
+  else if (a === "session" && amount(b)) budget.session = amount(b);
+  else if (amount(a)) budget.session = amount(a);
+  else if (a) return { text: "Usage: /budget 10 (session), /budget day 50, /budget off [day|session]" };
+  await storeSet($, "budget", budget);
+  await $.state.set(BUDGET, budget);
+  await $.state.set(ALERTS, {});
+  await checkBudget($);
+  const { value: u } = await $.state.get(READING);
+  const { value: l } = await $.state.get(LEDGER);
+  return { text: budgetLines(budget, u, l).join("\n") || "No budget set. /budget 10 sets a session budget, /budget day 50 a daily one." };
+}
+
+function budgetLines(budget = {}, u, l) {
+  const lines = [];
+  const cost = u?.cost?.usd ?? 0;
+  if (budget.session) lines.push(`Session budget: $${cost.toFixed(2)} of $${budget.session.toFixed(2)} (${Math.round((cost / budget.session) * 100)}%)`);
+  if (budget.day) lines.push(`Daily budget: $${(l?.today ?? 0).toFixed(2)} of $${budget.day.toFixed(2)} (${Math.round(((l?.today ?? 0) / budget.day) * 100)}%)`);
+  return lines;
+}
+
+// Toast once per level (80%, 100%) per scope, and once when the burn rate will
+// cross the session budget within 15 minutes.
+async function checkBudget($) {
+  const { value: budget = {} } = await $.state.get(BUDGET);
+  if (!budget.session && !budget.day) return;
+  const { value: u } = await $.state.get(READING);
+  const { value: l } = await $.state.get(LEDGER);
+  const { value: seen = {} } = await $.state.get(ALERTS);
+  const next = { ...seen };
+  const burn = burnRate(u);
+  const scopes = [
+    ["session", budget.session, u?.cost?.usd ?? 0, "Session"],
+    ["day", budget.day, l?.today ?? 0, "Today's"],
+  ];
+  for (const [key, limit, spent, name] of scopes) {
+    if (!limit) continue;
+    const level = spent >= limit ? 100 : spent >= limit * 0.8 ? 80 : 0;
+    if (level > (seen[key] ?? 0)) {
+      $.ui.toast(level === 100
+        ? `${name} spend $${spent.toFixed(2)} is over the $${limit.toFixed(2)} budget`
+        : `${name} spend $${spent.toFixed(2)} is at ${Math.round((spent / limit) * 100)}% of the $${limit.toFixed(2)} budget`, { timeoutMs: 8000 });
+      next[key] = level;
+    }
+    if (key === "session" && !seen.pace && level < 80 && burn) {
+      const mins = ((limit - spent) / burn) * 60;
+      if (mins <= 15) {
+        $.ui.toast(`At $${burn.toFixed(2)}/h the $${limit.toFixed(2)} session budget is reached in ~${fmtMinutes(mins)}`, { timeoutMs: 8000 });
+        next.pace = true;
+      }
+    }
+  }
+  await $.state.set(ALERTS, next);
+}
+
+// 0..1+ of the tighter budget, and which one, for the cost figure's color.
+function budgetUse(budget = {}, u, l) {
+  const uses = [
+    budget.session && { scope: "session", limit: budget.session, frac: (u?.cost?.usd ?? 0) / budget.session },
+    budget.day && { scope: "day", limit: budget.day, frac: (l?.today ?? 0) / budget.day },
+  ].filter(Boolean);
+  return uses.sort((x, y) => y.frac - x.frac)[0] ?? null;
+}
+
+function budgetTone(use) {
+  return !use ? null : use.frac >= 1 ? "red" : use.frac >= 0.8 ? "yellow" : "green";
 }
 
 // /context's category rows, estimated locally (no token-count requests).
@@ -213,10 +374,12 @@ async function answerUsage($, e, next) {
   const { value: a = { calls: 0, files: [] } } = await $.state.get(ACTIVITY);
   const { value: git } = await $.state.get(GIT);
   const { value: turns = [] } = await $.state.get(TURNS);
-  return { text: usageLines(u, a, git, turns).join("\n") };
+  const { value: budget } = await $.state.get(BUDGET);
+  const { value: ledger } = await $.state.get(LEDGER);
+  return { text: usageLines(u, a, git, turns, budget, ledger).join("\n") };
 }
 
-function usageLines(u = {}, a = { calls: 0, files: [] }, git, turns = []) {
+function usageLines(u = {}, a = { calls: 0, files: [] }, git, turns = [], budget, ledger) {
   const lines = [];
   if (u.rateLimits?.length) {
     lines.push("Rate limits:");
@@ -249,7 +412,11 @@ function usageLines(u = {}, a = { calls: 0, files: [] }, git, turns = []) {
   const top = Object.entries(a.tools ?? {}).sort((x, y) => y[1] - x[1]).slice(0, 5);
   if (top.length) lines.push(`  tools: ${top.map(([n, c]) => `${n}×${c}`).join("  ")}`);
   if (a.files.length) lines.push(`  edited: ${a.files.slice(-5).map((f) => f.split("/").pop()).join(", ")}`);
+  if (ledger) lines.push(`Today: $${ledger.today.toFixed(2)} over ${ledger.todayTurns} turn${ledger.todayTurns === 1 ? "" : "s"}  ·  last 7 days $${ledger.week.toFixed(2)}`);
+  lines.push(...budgetLines(budget, u, ledger));
   if (git?.branch) lines.push(`Git: ${gitText(git)}`);
+  for (const c of git?.pr?.failing ?? []) lines.push(`  ✗ ${c.name}  ${c.url}`);
+  if (git?.pr?.url) lines.push(`  ${git.pr.url}`);
   if (u.model) lines.push(`Model: ${shortModel(u.model)}`);
   return lines;
 }
@@ -322,8 +489,17 @@ async function takeGit($) {
   }
   const { value: prev } = await $.state.get(GIT);
   // the PR changes rarely: look again on a branch switch or every few minutes
-  const stale = !prev?.prCheckedAt || prev.branch !== git.branch || Date.now() - prev.prCheckedAt > PR_TTL;
-  if (git.branch && git.branch !== "detached" && stale) Object.assign(git, await lookupPr($));
+  const ttl = prev?.pr?.checks === "pending" ? PR_TTL_PENDING : PR_TTL;
+  const stale = !prev?.prCheckedAt || prev.branch !== git.branch || Date.now() - prev.prCheckedAt > ttl;
+  if (git.branch && git.branch !== "detached" && stale) {
+    Object.assign(git, await lookupPr($));
+    const was = prev?.branch === git.branch ? prev?.pr : null;
+    if (was?.checks === "pending" && git.pr?.number === was.number && git.pr.checks && git.pr.checks !== "pending") {
+      $.ui.toast(git.pr.checks === "pass"
+        ? `PR #${git.pr.number}: CI passed`
+        : `PR #${git.pr.number}: CI failed (${git.pr.failing.map((c) => c.name).join(", ")})`, { timeoutMs: 10_000 });
+    }
+  }
   else if (git.branch && prev?.branch === git.branch) Object.assign(git, { pr: prev.pr, prCheckedAt: prev.prCheckedAt });
   await $.state.set(GIT, git);
 }
@@ -347,16 +523,25 @@ async function diffStat($) {
 async function lookupPr($) {
   const checkedAt = Date.now();
   try {
-    const r = await $.process.run(["gh", "pr", "view", "--json", "number,state,isDraft,reviewDecision,statusCheckRollup"], { timeoutMs: 8000 });
+    const r = await $.process.run(["gh", "pr", "view", "--json", "number,url,state,isDraft,reviewDecision,statusCheckRollup"], { timeoutMs: 8000 });
     if (r.exitCode !== 0) return { pr: null, prCheckedAt: checkedAt };
     const p = JSON.parse(r.stdout);
-    const runs = (p.statusCheckRollup ?? []).map((c) => (c.conclusion || c.state || c.status || "").toUpperCase());
+    const rollup = p.statusCheckRollup ?? [];
+    const verdict = (c) => (c.conclusion || c.state || c.status || "").toUpperCase();
+    const runs = rollup.map(verdict);
+    const failing = rollup
+      .filter((c) => ["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"].includes(verdict(c)))
+      .slice(0, 5)
+      .map((c) => ({ name: c.name || c.context || "check", url: c.detailsUrl || c.targetUrl || p.url }));
     const checks = !runs.length ? null
       : runs.some((x) => ["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"].includes(x)) ? "fail"
       : runs.every((x) => ["SUCCESS", "NEUTRAL", "SKIPPED"].includes(x)) ? "pass" : "pending";
     return {
       pr: {
         number: p.number,
+        url: p.url,
+        failing,
+        pending: runs.filter((x) => !["SUCCESS", "NEUTRAL", "SKIPPED", "FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"].includes(x)).length,
         state: p.isDraft ? "draft" : String(p.state ?? "").toLowerCase(),
         review: p.reviewDecision === "APPROVED" ? "approved" : p.reviewDecision === "CHANGES_REQUESTED" ? "changes" : null,
         checks,
@@ -445,7 +630,7 @@ function chipBar(p, elapsed, width = TERM_BAR) {
   return runs;
 }
 
-function terminalRow({ Box, Text }, { u, a, git, working, columns }) {
+function terminalRow({ Box, Text }, { u, a, git, working, columns, budget, ledger }) {
   const wide = columns == null || columns >= 100;
   const chips = [];
 
@@ -467,10 +652,13 @@ function terminalRow({ Box, Text }, { u, a, git, working, columns }) {
   }
 
   if (typeof u?.cost?.usd === "number") {
+    const use = budgetUse(budget, u, ledger);
     const parts = [[`$${u.cost.usd.toFixed(2)}`, "value"]];
+    if (use?.scope === "session") parts.push([` / $${use.limit.toFixed(0)}`, "aside"]);
     const burn = burnRate(u);
     if (burn && wide) parts.push([` $${burn.toFixed(2)}/h`, "aside"]);
-    chips.push(chip(Text, "yellow", parts, "cost"));
+    if (ledger?.today > 0 && wide) parts.push([` today $${ledger.today.toFixed(2)}${budget?.day ? ` / $${budget.day.toFixed(0)}` : ""}`, "aside"]);
+    chips.push(chip(Text, budgetTone(use) ?? "yellow", parts, "cost"));
   }
 
   if (working != null) chips.push(chip(Text, "purple", [["● ", "accent"], [mmss(working), "value"]], "turn"));
@@ -548,6 +736,9 @@ function terminalDetails({ Box, Text }, d, git, u, columns = 100) {
     if (d.burn) kids.push(T(`  $${d.burn.toFixed(2)}/h`, { dimColor: true }));
     if (d.lastCost) kids.push(T(`  last +$${d.lastCost.toFixed(2)}`, { dimColor: true }));
     if (d.avgCost != null) kids.push(T(`  avg $${d.avgCost.toFixed(2)}/turn`, { dimColor: true }));
+    if (d.ledger) kids.push(T(`  today $${d.ledger.today.toFixed(2)}  7d $${d.ledger.week.toFixed(2)}`, { dimColor: true }));
+    const use = budgetUse(d.budget, u, d.ledger);
+    if (use) kids.push(T(`  ${Math.round(use.frac * 100)}% of $${use.limit.toFixed(0)} ${use.scope} budget`, { color: { green: "green", yellow: "yellow", red: "red" }[budgetTone(use)] }));
     const spark = sparkline(d.turnCosts);
     if (spark) kids.push(T(`  ${spark}`, { color: "yellow" }));
     row("Spend", "yellow", kids);
@@ -756,35 +947,40 @@ function compactSpan(s) {
   return s.replace(/ 0[hm]$/, "").replace(" ", "");
 }
 
-function svgStrip(segments) {
-  const GAP = 5, SEP = 10, PAD = 2;
-  let x = PAD, body = "";
-  segments.forEach((items, i) => {
-    if (i) {
-      x += SEP;
-      body += `<rect class="rule" x="${x.toFixed(1)}" y="${MID - 7}" width="1" height="14"/>`;
-      x += 1 + SEP;
-    }
-    items.forEach((it, j) => {
-      if (j) x += it.tight ? 3 : GAP;
-      body += drawItem(it, x);
-      x += itemWidth(it);
-    });
+// A pill: one figure on a soft tint of its tone with a hairline edge. Each pill
+// is its own drawing, so the band's flex layout wraps them as units.
+const PILL_TONES = ["green", "yellow", "red", "blue", "purple", "cyan"];
+function pillCss(i) {
+  const fg = PAL.fg[i];
+  return PILL_TONES.map((k) => `.pb-${k}{fill:${PAL[k][i]};fill-opacity:${i ? 0.14 : 0.1};stroke:${PAL[k][i]};stroke-opacity:${i ? 0.3 : 0.28}}`).join("") +
+    `.pb-n{fill:${fg};fill-opacity:${i ? 0.06 : 0.045};stroke:${fg};stroke-opacity:${i ? 0.14 : 0.12}}`;
+}
+
+function svgPill(tone, items) {
+  const GAP = 5, PADX = 10;
+  let x = PADX, body = "";
+  items.forEach((it, j) => {
+    if (j) x += it.tight ? 3 : GAP;
+    body += drawItem(it, x);
+    x += itemWidth(it);
   });
-  const width = Math.ceil(x + PAD);
-  const cls = (i) => Object.entries(PAL).map(([k, v]) => `.${k}{fill:${v[i]}}.${k}-s{stroke:${v[i]}}`).join("");
+  const width = Math.ceil(x + PADX);
+  const cls = (i) => Object.entries(PAL).map(([k, v]) => `.${k}{fill:${v[i]}}.${k}-s{stroke:${v[i]}}`).join("") + pillCss(i);
   const source = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${H}" viewBox="0 0 ${width} ${H}" font-family="${FONT}">` +
-    `<style>${cls(0)}@media (prefers-color-scheme:dark){${cls(1)}}</style>${body}</svg>`;
+    `<style>${cls(0)}@media (prefers-color-scheme:dark){${cls(1)}}</style>` +
+    `<rect class="pb-${tone ?? "n"}" x=".5" y="3.5" width="${width - 1}" height="${H - 7}" rx="${(H - 7) / 2}" stroke-width="1"/>${body}</svg>`;
   return { source, width };
 }
 
-// Two strips: the core figures (limits, context, turn) sized to fit a narrow
-// composer, and the extras (git, cost, session time), which wrap under the
-// core when the slot is narrow and sit beside it when it is wide.
-function desktopRow({ Svg }, { u, a, git, working }) {
-  const core = [];
-  const extra = [];
-  const alt = [];
+// Session figures on the left (limits, context, live turn); work and money on
+// the right (git, PR, cost, today). Each side wraps on its own.
+function desktopRow({ Svg, Link }, { u, git, working, budget, ledger }) {
+  const left = [];
+  const right = [];
+  const add = (side, key, tone, items, alt) => {
+    const { source, width } = svgPill(tone, items);
+    side.push(Svg({ key, source, alt, width, height: H }));
+  };
 
   for (const rl of u?.rateLimits ?? []) {
     const p = clampPct(rl.percentUsed);
@@ -794,58 +990,58 @@ function desktopRow({ Svg }, { u, a, git, working }) {
     const items = [{ label: limitLabel(rl).toUpperCase() }, { bar: { pct: p, pace: pace?.elapsed, tone } }, { value: `${p}%`, tone }];
     if (pace?.projected != null && pace.projected >= 100) items.push({ aside: `→${Math.min(999, Math.round(pace.projected))}%`, tone, tight: true });
     if (reset) items.push({ aside: `↻${compactSpan(reset)}` });
-    core.push(items);
-    alt.push(`${limitLabel(rl)} ${p}%${reset ? ` resets in ${reset}` : ""}`);
+    add(left, `rl-${rl.kind}`, tone === "green" ? null : tone, items, `${limitLabel(rl)} ${p}%${reset ? ` resets in ${reset}` : ""}`);
   }
 
   if (u?.context?.window) {
     const pct = ctxPct(u.context);
-    const tone = pct < 50 ? "blue" : pct < 75 ? "yellow" : "red";
-    const items = [{ label: "CTX" }, { bar: { pct, tone } }, { value: `${pct}%`, tone }, { aside: `${short(u.context.tokens)}/${short(u.context.window)}` }];
+    const tone = CTX_TONE(pct);
+    const items = [{ label: "CTX" }, { bar: { pct, tone } }, { value: `${pct}%`, tone }, { aside: `${short(u.context.tokens ?? 0)}/${short(u.context.window)}` }];
     if (u.delta) items.push({ aside: u.delta > 0 ? `+${short(u.delta)}` : `−${short(-u.delta)}`, tone });
-    core.push(items);
-    alt.push(`context ${pct}%`);
+    add(left, "ctx", pct >= 75 ? tone : null, items, `context ${pct}%`);
   }
 
-  if (working != null) {
-    core.push([{ dot: true, tone: "purple" }, { value: mmss(working), tone: "purple", tight: true }]);
-    alt.push(`turn ${mmss(working)}`);
-  }
+  if (working != null) add(left, "turn", "purple", [{ dot: true, tone: "purple" }, { value: mmss(working), tone: "purple", tight: true }], `turn ${mmss(working)}`);
 
   if (git?.branch) {
-    const items = [{ icon: "branch" }, { value: git.branch.length > 18 ? `${git.branch.slice(0, 17)}…` : git.branch, tight: true }];
+    const items = [{ icon: "branch" }, { value: git.branch.length > 22 ? `${git.branch.slice(0, 21)}…` : git.branch, tight: true }];
     if (git.added || git.removed) items.push({ aside: `+${git.added ?? 0}`, tone: "green" }, { aside: `−${git.removed ?? 0}`, tone: "red", tight: true });
     else if (git.dirty) items.push({ aside: `±${git.dirty}`, tone: "yellow" });
     if (git.untracked) items.push({ aside: `?${git.untracked}` });
     const sync = [git.ahead && `↑${git.ahead}`, git.behind && `↓${git.behind}`].filter(Boolean).join(" ");
     if (sync) items.push({ aside: sync });
-    extra.push(items);
+    add(right, "git", null, items, `git ${gitText(git)}`);
   }
+
   if (git?.pr) {
     const pr = git.pr, tone = prTone(pr);
-    const items = [{ label: "PR" }, { value: `#${pr.number}`, tone }, { aside: pr.state }];
+    const items = [{ dot: true, tone }, { value: `#${pr.number}`, tone, tight: true }, { aside: pr.state }];
     if (pr.review) items.push({ aside: pr.review === "approved" ? "✓ approved" : "✗ changes", tone: pr.review === "approved" ? "green" : "red" });
-    if (pr.checks) items.push({ aside: { pass: "✓ ci", fail: "✗ ci", pending: "● ci" }[pr.checks], tone: { pass: "green", fail: "red", pending: "yellow" }[pr.checks] });
-    extra.push(items);
+    if (pr.checks) items.push({ aside: { pass: "✓ ci", fail: `✗ ${pr.failing?.length || ""} ci`.replace("  ", " "), pending: "● ci" }[pr.checks], tone: { pass: "green", fail: "red", pending: "yellow" }[pr.checks] });
+    add(right, "pr", tone, items, prText(pr));
+    if (pr.url) right.push(Link({ href: pr.url, label: "↗" }));
   }
-  const burn = burnRate(u);
-  const dur = duration(u?.startedAt);
-  if (u?.cost?.usd > 0) extra.push([{ value: `$${u.cost.usd.toFixed(2)}` }, ...(burn ? [{ aside: `$${burn.toFixed(2)}/h` }] : [])]);
-  if (dur) extra.push([{ label: "SESSION" }, { value: dur }]);
 
-  const extraAlt = [u?.cost?.usd > 0 && `cost $${u.cost.usd.toFixed(2)}`, git?.branch && `git ${git.branch}`, git?.pr && prText(git.pr), dur && `session ${dur}`].filter(Boolean);
-  // one strip when both fit a typical composer, two that wrap otherwise
-  if (core.length && extra.length && svgStrip([...core, ...extra]).width <= 720) {
-    const { source, width } = svgStrip([...core, ...extra]);
-    return [Svg({ key: "strip", source, alt: [...alt, ...extraAlt].join(", "), width, height: H })];
+  if (typeof u?.cost?.usd === "number") {
+    const use = budgetUse(budget, u, ledger);
+    const tone = budgetTone(use);
+    const items = [{ value: `$${u.cost.usd.toFixed(2)}`, tone: tone && tone !== "green" ? tone : undefined }];
+    if (use?.scope === "session") items.push({ aside: `/ $${use.limit.toFixed(0)}`, tight: true });
+    const burn = burnRate(u);
+    if (burn) items.push({ aside: `$${burn.toFixed(2)}/h` });
+    add(right, "cost", tone && tone !== "green" ? tone : null, items, `cost $${u.cost.usd.toFixed(2)}`);
   }
-  const out = [];
-  for (const [key, segs, label] of [["core", core, alt.join(", ")], ["extra", extra, extraAlt.join(", ")]]) {
-    if (!segs.length) continue;
-    const { source, width } = svgStrip(segs);
-    out.push(Svg({ key, source, alt: label, width, height: H }));
+
+  if (ledger?.today > 0) {
+    const use = budget?.day ? ledger.today / budget.day : null;
+    const tone = use == null ? null : use >= 1 ? "red" : use >= 0.8 ? "yellow" : null;
+    const items = [{ label: "TODAY" }, { value: `$${ledger.today.toFixed(2)}`, tone: tone ?? undefined }];
+    if (budget?.day) items.push({ aside: `/ $${budget.day.toFixed(0)}`, tight: true });
+    if (ledger.week > ledger.today) items.push({ aside: `7d $${ledger.week.toFixed(0)}` });
+    add(right, "today", tone, items, `today $${ledger.today.toFixed(2)}`);
   }
-  return out;
+
+  return { left, right };
 }
 
 // ---- desktop: detail cards ---------------------------------------------------
@@ -917,9 +1113,10 @@ function desktopDetails({ Svg }, d, git, u) {
   // spend
   {
     const x = at(1);
-    body += card(x) + title(x, "SPEND", d.burn ? { s: `$${d.burn.toFixed(2)}/h` } : null);
+    const use = budgetUse(d.budget, u, d.ledger);
+    body += card(x) + title(x, "SPEND", use ? { s: `${Math.round(use.frac * 100)}% of $${use.limit.toFixed(0)}`, cls: budgetTone(use) } : d.burn ? { s: `$${d.burn.toFixed(2)}/h` } : null);
     if (d.cost != null) {
-      body += big(x, `$${d.cost.toFixed(2)}`, "fg");
+      body += big(x, `$${d.cost.toFixed(2)}`, "fg", d.ledger?.today > 0 ? `today $${d.ledger.today.toFixed(2)}` : d.burn && use ? `$${d.burn.toFixed(2)}/h` : null);
       body += line(x, [d.lastCost && `last +$${d.lastCost.toFixed(2)}`, d.avgCost != null && `avg $${d.avgCost.toFixed(2)}`].filter(Boolean).join(" · ") || (d.turns ? "per turn from next turn" : "no turns yet"));
       body += cols(x, d.turnCosts, "yellow");
     }
