@@ -135,4 +135,33 @@ describe("usage-bar", () => {
     expect(await ui.find({ type: "Svg" })).toBeDefined();
     await ui.unmount();
   });
+
+  test("git pill shows branch and dirty count; more toggles the details", async ($, on) => {
+    stubUsage($, on);
+    on("process.run", () => ({ value: { exitCode: 0, stdout: "## main...origin/main [ahead 2]\n M a.go\n?? b.go\n", stderr: "" } }));
+    on("session.start", ($, e) => ({ cwd: e.cwd }));
+    await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
+    const ui = await mount($);
+    expect(await ui.find({ type: "Text", text: /⎇ main/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /±2/ })).toBeDefined();
+    await ui.press({ key: "more" } as any);
+    expect(await ui.find({ type: "Text", text: /Git: main/ })).toBeDefined();
+    await ui.unmount();
+  });
+
+  test("turn timer shows while a turn is working", async ($, on) => {
+    stubUsage($, on);
+    on("session.start", ($, e) => ({ cwd: e.cwd }));
+    on("prompt.submit", ($, e) => ({ text: e.text }));
+    await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
+    await $.prompt.submit({ text: "go" } as any);
+    const ui = await $.ui.mount({
+      plugin: "usage-bar",
+      surface: "terminal",
+      component: "AbovePrompt",
+      props: { hasSurvey: false, isWorking: true, maxRows: 10, bodyColumns: 120 },
+    } as any);
+    expect(await ui.find({ type: "Text", text: /0:0\d/ })).toBeDefined();
+    await ui.unmount();
+  });
 });

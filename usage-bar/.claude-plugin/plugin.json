@@ -1,6 +1,6 @@
 {
   "name": "usage-bar",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "description": "Live band above the prompt: 5h and 7d rate-limit usage with reset countdowns, token traffic, context window, and session cost.",
   "author": { "name": "Bugra Yigiter", "url": "https://github.com/abyigiter" },
   "types": "./types/index.d.ts"
