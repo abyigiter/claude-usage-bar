@@ -1023,9 +1023,30 @@ function svgPill(tone, items) {
   return { source, width };
 }
 
+// The PR pill is native, not a drawing, so the link sits inside it: a rounded
+// Box in the PR's state color whose whole label opens the pull request.
+function prPill({ Box, Text, Link }, pr, tone) {
+  const c = PAL[tone][1];
+  const checks = { pass: "✓ ci", fail: `✗ ${pr.failing?.length || ""} ci`.replace("  ", " "), pending: "● ci" }[pr.checks];
+  const review = { approved: "✓ approved", changes: "✗ changes" }[pr.review];
+  const label = [`#${pr.number}`, pr.state, review, checks, "↗"].filter(Boolean).join(" ");
+  return Box({
+    key: "pr",
+    flexDirection: "row",
+    alignItems: "center",
+    flexShrink: 0,
+    borderStyle: "round",
+    borderColor: `${c}6b`,
+    backgroundColor: `${c}24`,
+    paddingX: 1,
+    hover: { backgroundColor: `${c}40`, borderColor: c },
+    children: [Text({ children: "● ", color: c }), Link({ href: pr.url, label })],
+  });
+}
+
 // Session figures on the left (limits, context, live turn); work and money on
 // the right (git, PR, cost, today). Each side wraps on its own.
-function desktopRow({ Svg, Link }, { u, git, working, budget, ledger }) {
+function desktopRow({ Svg, Link, Box, Text }, { u, git, working, budget, ledger }) {
   const left = [];
   const right = [];
   const add = (side, key, tone, items, alt) => {
@@ -1069,8 +1090,8 @@ function desktopRow({ Svg, Link }, { u, git, working, budget, ledger }) {
     const items = [{ dot: true, tone }, { value: `#${pr.number}`, tone, tight: true }, { aside: pr.state }];
     if (pr.review) items.push({ aside: pr.review === "approved" ? "✓ approved" : "✗ changes", tone: pr.review === "approved" ? "green" : "red" });
     if (pr.checks) items.push({ aside: { pass: "✓ ci", fail: `✗ ${pr.failing?.length || ""} ci`.replace("  ", " "), pending: "● ci" }[pr.checks], tone: { pass: "green", fail: "red", pending: "yellow" }[pr.checks] });
-    add(right, "pr", tone, items, prText(pr));
-    if (pr.url) right.push(Link({ href: pr.url, label: "↗" }));
+    if (pr.url) right.push(prPill({ Box, Text, Link }, pr, tone));
+    else add(right, "pr", tone, items, prText(pr));
   }
 
   if (typeof u?.cost?.usd === "number") {

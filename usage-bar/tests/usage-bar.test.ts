@@ -224,6 +224,11 @@ describe("usage-bar", () => {
     expect(await ui.find({ type: "Text", text: /✗ ci/ })).toBeDefined();
     expect(await ui.find({ type: "Link" } as any)).toBeDefined();
     await ui.unmount();
+    const desk = await $.ui.mount({ plugin: "usage-bar", surface: "desktop", component: "AbovePrompt", props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120 } } as any);
+    const link: any = await desk.find({ type: "Link" } as any);
+    expect(link.props.href).toBe("https://github.com/o/r/pull/144");
+    expect(link.props.label).toContain("#144 open ✓ approved ✗ 1 ci ↗");
+    await desk.unmount();
     const r = await $.command.run({ command: "usage" } as any);
     expect(r.text).toContain("PR #144 open approved ✗ checks");
     expect(r.text).toContain("✗ lint  https://ci/lint");
