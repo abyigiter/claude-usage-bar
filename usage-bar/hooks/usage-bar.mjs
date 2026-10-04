@@ -95,8 +95,10 @@ export function register(on) {
     if (!row.length) return next(e);
     const { Box, Text, Button } = els;
     const expanded = !!ui?.expanded;
-    row.push(Button({
-      label: expanded ? "less" : "more",
+    const isDesktop = e.surface === "desktop";
+    row[isDesktop ? "unshift" : "push"](Button({
+      key: "more",
+      label: isDesktop ? (expanded ? "▴" : "▾") : expanded ? "less" : "more",
       plain: true,
       dimColor: true,
       onPress: async () => { await $.state.set(UI, { expanded: !expanded }); },
@@ -381,9 +383,9 @@ function fmtMinutes(m) {
 }
 
 // ---- desktop: stat tiles (SVG) ---------------------------------------------
-const LABEL_W = 6.4;
-const VALUE_W = 8.3;
-const TILE_H = 44;
+const LABEL_W = 5.6;
+const VALUE_W = 7.4;
+const TILE_H = 28;
 const TONES = {
   green:  { l: ["#e1efe6", "#1d3b2c", "#3f8f68"], d: ["#1d362a", "#c4e8d3", "#5fcf9a"] },
   yellow: { l: ["#f6ecce", "#4a3a0c", "#b0820a"], d: ["#3a3216", "#f1e2a6", "#e6b830"] },
@@ -395,52 +397,52 @@ const TONES = {
 };
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-// A tile: small caps label (with an aside on its right), a value row, and an
-// optional bar underneath with a pace tick. parts: {text,bold,dim} | {spark}.
+// A compact one-line tile: small-caps label, bold value, dim aside, and an
+// optional hairline bar along the bottom edge with a pace tick.
+// parts: {text,bold,dim} | {spark}.
 function svgTile({ tone, label, aside, parts, bar, alt }) {
   const { l, d } = TONES[tone];
-  const padX = 12;
-  const GAP = 7; // SVG collapses spaces, so parts are trimmed and spaced here
-  parts = parts.map((p) => (p.text == null ? p : { ...p, text: p.text.trim() })).filter((p) => p.spark || p.text);
-  const valueW = parts.reduce((w, p) => w + (p.spark ? p.spark.length * 4 - 1 : p.text.length * VALUE_W) + GAP, -GAP);
-  const labelW = label.length * LABEL_W + (aside ? 14 + aside.length * LABEL_W : 0);
-  const inner = Math.ceil(Math.max(valueW, labelW, bar ? 88 : 0));
+  const padX = 10;
+  const GAP = 6; // SVG collapses spaces, so parts are trimmed and spaced here
+  const items = [{ label }, ...parts, aside ? { text: aside, dim: true, small: true } : null]
+    .filter(Boolean)
+    .map((p) => (p.text == null ? p : { ...p, text: p.text.trim() }))
+    .filter((p) => p.label || p.spark || p.text);
+  const widthOf = (p) => (p.label ? p.label.length * LABEL_W : p.spark ? p.spark.length * 3 : p.text.length * (p.small ? LABEL_W + 0.4 : VALUE_W));
+  const inner = Math.ceil(items.reduce((w, p) => w + widthOf(p) + GAP, -GAP));
   const width = inner + padX * 2;
-  let body = `<text class="fg" x="${padX}" y="15" fill="${l[1]}" opacity=".62" font-size="10" font-weight="600" letter-spacing=".6" textLength="${(label.length * LABEL_W).toFixed(1)}" lengthAdjust="spacingAndGlyphs">${esc(label)}</text>`;
-  if (aside) {
-    const w = aside.length * LABEL_W;
-    body += `<text class="fg" x="${padX + inner - w}" y="15" fill="${l[1]}" opacity=".62" font-size="10" textLength="${w.toFixed(1)}" lengthAdjust="spacingAndGlyphs" text-anchor="start">${esc(aside)}</text>`;
-  }
+  const y = bar ? 16 : 18;
   let x = padX;
-  const vy = bar ? 30 : 33;
-  for (const p of parts) {
-    if (p.spark) {
+  let body = "";
+  for (const p of items) {
+    const w = widthOf(p);
+    if (p.label) {
+      body += `<text class="fg" x="${x}" y="${y}" fill="${l[1]}" opacity=".55" font-size="9" font-weight="700" letter-spacing=".5" textLength="${w.toFixed(1)}" lengthAdjust="spacingAndGlyphs">${esc(p.label)}</text>`;
+    } else if (p.spark) {
       const lo = Math.min(...p.spark), hi = Math.max(...p.spark);
       p.spark.forEach((v, j) => {
-        const h = 3 + (hi === lo ? 0.5 : (v - lo) / (hi - lo)) * 11;
-        body += `<rect class="ac" x="${x + j * 4}" y="${vy + 1 - h}" width="3" height="${h.toFixed(1)}" rx="1" fill="${l[2]}" opacity="${j === p.spark.length - 1 ? 1 : 0.5}"/>`;
+        const h = 2.5 + (hi === lo ? 0.5 : (v - lo) / (hi - lo)) * 8;
+        body += `<rect class="ac" x="${x + j * 3}" y="${y + 1 - h}" width="2" height="${h.toFixed(1)}" rx="1" fill="${l[2]}" opacity="${j === p.spark.length - 1 ? 1 : 0.5}"/>`;
       });
-      x += p.spark.length * 4 - 1 + GAP;
     } else {
-      const w = p.text.length * VALUE_W;
-      body += `<text class="fg" x="${x}" y="${vy}" fill="${l[1]}" opacity="${p.dim ? 0.6 : 1}" font-size="14" font-weight="${p.bold ? 700 : 500}" textLength="${w.toFixed(1)}" lengthAdjust="spacingAndGlyphs">${esc(p.text)}</text>`;
-      x += w + GAP;
+      body += `<text class="fg" x="${x}" y="${y}" fill="${l[1]}" opacity="${p.dim ? 0.6 : 1}" font-size="${p.small ? 10 : 12}" font-weight="${p.bold ? 700 : 500}" textLength="${w.toFixed(1)}" lengthAdjust="spacingAndGlyphs">${esc(p.text)}</text>`;
     }
+    x += w + GAP;
   }
   if (bar) {
-    const by = TILE_H - 9;
-    const fill = Math.max(bar.pct > 0 ? 3 : 0, (bar.pct / 100) * inner);
-    body += `<rect class="tr" x="${padX}" y="${by}" width="${inner}" height="3" rx="1.5" fill="${l[1]}" opacity=".14"/>`;
-    body += `<rect class="ac" x="${padX}" y="${by}" width="${fill}" height="3" rx="1.5" fill="${l[2]}"/>`;
+    const by = TILE_H - 6;
+    const fill = Math.max(bar.pct > 0 ? 2 : 0, (bar.pct / 100) * inner);
+    body += `<rect class="tr" x="${padX}" y="${by}" width="${inner}" height="2.5" rx="1.25" fill="${l[1]}" opacity=".14"/>`;
+    body += `<rect class="ac" x="${padX}" y="${by}" width="${fill}" height="2.5" rx="1.25" fill="${l[2]}"/>`;
     if (bar.pace != null) {
       const px = padX + Math.min(inner - 1, Math.max(1, bar.pace * inner));
-      body += `<rect class="fg" x="${px - 1}" y="${by - 3}" width="2" height="9" rx="1" fill="${l[1]}"/>`;
+      body += `<rect class="fg" x="${px - 0.75}" y="${by - 2.5}" width="1.5" height="7.5" rx=".75" fill="${l[1]}"/>`;
     }
   }
   const css = `.bg{fill:${d[0]}}.fg{fill:${d[1]}}.ac{fill:${d[2]}}.tr{fill:${d[1]}}`;
   const source = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${TILE_H}" viewBox="0 0 ${width} ${TILE_H}" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">` +
     `<style>@media (prefers-color-scheme:dark){${css}}</style>` +
-    `<rect class="bg" width="${width}" height="${TILE_H}" rx="10" fill="${l[0]}"/>${body}</svg>`;
+    `<rect class="bg" width="${width}" height="${TILE_H}" rx="8" fill="${l[0]}"/>${body}</svg>`;
   return { source, width, alt };
 }
 
@@ -457,11 +459,11 @@ function desktopRow({ Svg }, { u, a, git, working, columns }) {
     const pace = paceOf(rl);
     const reset = resetsIn(rl.resetsAt);
     const parts = [{ text: `${p}%`, bold: true }];
-    if (pace?.projected != null) parts.push({ text: ` → ${Math.min(999, Math.round(pace.projected))}%`, dim: true });
+    if (pace?.projected != null) parts.push({ text: `→${Math.min(999, Math.round(pace.projected))}%`, dim: true });
     add({
       tone: { ok: "green", warn: "yellow", crit: "red" }[limitStatus(rl)],
       label: limitLabel(rl).toUpperCase(),
-      aside: wide && reset ? `resets ${reset}` : null,
+      aside: wide && reset ? `↻${reset.replace(" ", "")}` : null,
       parts,
       bar: { pct: p, pace: pace?.elapsed },
       alt: `${limitLabel(rl)} limit ${p}% used${reset ? `, resets in ${reset}` : ""}`,
@@ -470,12 +472,12 @@ function desktopRow({ Svg }, { u, a, git, working, columns }) {
 
   if (u?.context?.window) {
     const pct = ctxPct(u.context);
-    const parts = [{ text: short(u.context.tokens ?? 0), bold: true }, { text: ` / ${short(u.context.window)}`, dim: true }];
+    const parts = [{ text: `${pct}%`, bold: true }, { text: `${short(u.context.tokens ?? 0)}/${short(u.context.window)}`, dim: true }];
     if (wide && u.history?.length >= 2) parts.push({ spark: u.history });
     add({
       tone: pct < 50 ? "blue" : pct < 75 ? "yellow" : "red",
-      label: "CONTEXT",
-      aside: u.delta ? (u.delta > 0 ? `▲ +${short(u.delta)}` : `▼ ${short(-u.delta)}`) : `${pct}%`,
+      label: "CTX",
+      aside: u.delta ? (u.delta > 0 ? `▲${short(u.delta)}` : `▼${short(-u.delta)}`) : null,
       parts,
       bar: { pct },
       alt: `Context ${pct}% used`,
@@ -485,27 +487,27 @@ function desktopRow({ Svg }, { u, a, git, working, columns }) {
   if (typeof u?.cost?.usd === "number") {
     const burn = burnRate(u);
     const parts = [{ text: `$${u.cost.usd.toFixed(2)}`, bold: true }];
-    if (u.costDelta > 0 && wide) parts.push({ text: ` +$${u.costDelta.toFixed(2)}`, dim: true });
+    if (u.costDelta > 0 && wide) parts.push({ text: `+$${u.costDelta.toFixed(2)}`, dim: true });
     add({ tone: "amber", label: "COST", aside: burn ? `$${burn.toFixed(2)}/h` : null, parts, alt: `Session cost $${u.cost.usd.toFixed(2)}` });
   }
 
-  if (working != null) add({ tone: "purple", label: "TURN", aside: "live", parts: [{ text: mmss(working), bold: true }], alt: `Turn running ${mmss(working)}` });
+  if (working != null) add({ tone: "purple", label: "TURN", parts: [{ text: mmss(working), bold: true }], alt: `Turn running ${mmss(working)}` });
 
   if (git?.branch && wide) {
     const sync = [git.ahead && `↑${git.ahead}`, git.behind && `↓${git.behind}`].filter(Boolean).join(" ");
     const parts = [{ text: git.branch.length > 16 ? `${git.branch.slice(0, 15)}…` : git.branch, bold: true }];
-    if (git.dirty) parts.push({ text: ` ±${git.dirty}` });
-    add({ tone: git.dirty ? "yellow" : "slate", label: "BRANCH", aside: sync || null, parts, alt: `Git branch ${git.branch}, ${git.dirty} changed` });
+    if (git.dirty) parts.push({ text: `±${git.dirty}`, dim: true });
+    add({ tone: git.dirty ? "yellow" : "slate", label: "GIT", aside: sync || null, parts, alt: `Git branch ${git.branch}, ${git.dirty} changed` });
   }
 
   if (a?.calls && wide) {
-    const parts = [{ text: `${a.calls}`, bold: true }, { text: ` call${a.calls === 1 ? "" : "s"}`, dim: true }];
-    if (a.files.length) parts.push({ text: `  ✎ ${a.files.length}` });
-    add({ tone: "purple", label: "ACTIVITY", aside: null, parts, alt: `${a.calls} tool calls, ${a.files.length} files edited` });
+    const parts = [{ text: `${a.calls}`, bold: true }];
+    if (a.files.length) parts.push({ text: `✎${a.files.length}`, dim: true });
+    add({ tone: "purple", label: "TOOLS", aside: null, parts, alt: `${a.calls} tool calls, ${a.files.length} files edited` });
   }
 
   const dur = duration(u?.startedAt);
-  if (dur && wide) add({ tone: "slate", label: "SESSION", parts: [{ text: dur, bold: true }], alt: `Session duration ${dur}` });
+  if (dur && wide) add({ tone: "slate", label: "TIME", parts: [{ text: dur, bold: true }], alt: `Session duration ${dur}` });
   if (u?.model) add({ tone: "slate", label: "MODEL", parts: [{ text: prettyModel(u.model), bold: true }], alt: `Model ${shortModel(u.model)}` });
   return tiles;
 }
