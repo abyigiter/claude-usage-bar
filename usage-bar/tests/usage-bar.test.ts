@@ -225,9 +225,10 @@ describe("usage-bar", () => {
     expect(await ui.find({ type: "Link" } as any)).toBeDefined();
     await ui.unmount();
     const desk = await $.ui.mount({ plugin: "usage-bar", surface: "desktop", component: "AbovePrompt", props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120 } } as any);
-    const link: any = await desk.find({ type: "Link" } as any);
-    expect(link.props.href).toBe("https://github.com/o/r/pull/144");
-    expect(link.props.label).toContain("#144 open ✓ approved ✗ 1 ci ↗");
+    const svgs: any[] = await desk.findAll({ type: "Svg" } as any);
+    const pill = svgs.find((x) => String(x.props.source).includes("#144"));
+    expect(pill.props.isInteractive).toBe(true);
+    expect(pill.props.source).toContain('<a href="https://github.com/o/r/pull/144" target="_blank"');
     await desk.unmount();
     const r = await $.command.run({ command: "usage" } as any);
     expect(r.text).toContain("PR #144 open approved ✗ checks");
