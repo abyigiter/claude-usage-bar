@@ -144,15 +144,18 @@ function band(Box, Text, u, a, columns, next, e) {
   }
   if (u?.model) pills.push(pill(Text, "blue", [[shortModel(u.model), { dim: true }]]));
   if (pills.length === 0) return next(e);
-  return Box({ flexDirection: "row", gap: 2, paddingX: 1, children: pills });
+  return Box({ flexDirection: "row", gap: 1, paddingX: 1, children: pills });
 }
 
-// A pill is a row of inverse-colored Texts; adjacent ones join seamlessly.
+// A pill is a row of Texts on a soft tinted background (the desktop palette),
+// bright text on a dark tint; adjacent ones join seamlessly.
+const TERM_TONE = { green: "green", yellow: "yellow", red: "red", magenta: "purple", cyan: "purple", blue: "blue" };
 function pill(Text, color, parts) {
+  const [bg, fg] = TONES[TERM_TONE[color] ?? "slate"].d;
   return parts.map(([s, o = {}]) =>
     Text({
-      color,
-      inverse: true,
+      color: fg,
+      backgroundColor: bg,
       dimColor: !!o.dim,
       bold: !!o.bold,
       children: ` ${s} `,
