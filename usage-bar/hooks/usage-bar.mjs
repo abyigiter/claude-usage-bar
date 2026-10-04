@@ -31,7 +31,8 @@ export function register(on) {
     const result = await next(e);
     await takeReading($);
     await $.state.set(BUDGET, (await storeGet($, "budget")) ?? {});
-    await refreshLedger($);
+    await syncLedger($);
+    try { await $.store.delete("ledger"); } catch { /* 0.9.0's shared ledger, replaced */ }
     $.clock.every(60_000, () => takeReading($)); // keep reset countdowns fresh
     $.clock.every(1000, () => { // live turn timer: redraw each second while a turn runs
       if (turnStart && Date.now() - turnStart < 2 * 3_600_000) $.state.get(TURN).then(({ value: t }) => $.state.set(TURN, { ...t, startedAt: turnStart, tick: Date.now() }));
@@ -136,8 +137,9 @@ export function register(on) {
     if (isDesktop) {
       const { left, right } = desktopRow(els, view);
       if (!left.length && !right.length) return next(e);
-      const side = (key, children) => Box({ key, flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 1, children });
-      header = Box({ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", columnGap: 2, paddingX: 1, children: [side("left", left), side("right", [...right, more])] });
+      // one even flow: pills wrap as units in a fixed order, never as two
+      // ragged groups when one pill (a long branch, a PR) grows
+      header = Box({ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 1, paddingX: 1, children: [...left, ...right, more] });
     } else {
       const row = terminalRow(els, view);
       if (!row.length) return next(e);
@@ -183,7 +185,7 @@ async function logTurn($, e, costAt, after) {
   };
   const { value: turns = [] } = await $.state.get(TURNS);
   await $.state.set(TURNS, [...turns, rec].slice(-TURN_LOG));
-  if (usd != null) await addToLedger($, usd);
+  await syncLedger($, true);
 }
 
 // $.store, failing soft: a host without it keeps budgets and the ledger off.
@@ -204,31 +206,71 @@ async function storeSet($, key, value) {
 }
 
 // ---- budgets and the daily ledger ----------------------------------------------
-// The ledger lives in $.store, shared by every session: spend and turns per
-// local day. The state copy is what the drawing reads.
+// Each session keeps its own running total per local day in $.store, under
+// `day:<date>:<session>`, so parallel sessions never overwrite each other.
+// A session that began today counts in full; one carried over from an earlier
+// day counts from its first reading today. Today is the sum over sessions.
+let sessionKey;
+
 function dayKey(t = Date.now()) {
   const d = new Date(t);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-async function addToLedger($, usd) {
-  const book = (await storeGet($, "ledger")) ?? {};
-  const k = dayKey();
-  book[k] = { usd: (book[k]?.usd ?? 0) + usd, turns: (book[k]?.turns ?? 0) + 1 };
-  const keep = Object.keys(book).sort().slice(-LEDGER_DAYS);
-  await storeSet($, "ledger", Object.fromEntries(keep.map((d) => [d, book[d]])));
+async function syncLedger($, isTurn = false) {
+  const { value: u } = await $.state.get(READING);
+  const cost = u?.cost?.usd;
+  if (typeof cost !== "number") return;
+  if (!sessionKey) {
+    try {
+      sessionKey = await $.session.id();
+    } catch {
+      sessionKey = `s${u.startedAt ?? Date.now()}`;
+    }
+  }
+  const day = dayKey();
+  const key = `day:${day}:${sessionKey}`;
+  const prev = await storeGet($, key);
+  const startedToday = typeof u.startedAt === "number" && dayKey(u.startedAt) === day;
+  const entry = prev ?? { spent: startedToday ? cost : 0, last: cost, turns: 0 };
+  if (prev) {
+    const delta = cost - prev.last;
+    entry.spent = prev.spent + (delta < 0 ? cost : delta); // a reset cost counts from zero
+    entry.last = cost;
+  }
+  if (isTurn) entry.turns += 1;
+  if (!prev || prev.spent !== entry.spent || prev.last !== entry.last || isTurn) await storeSet($, key, entry);
   await refreshLedger($);
 }
 
 async function refreshLedger($) {
-  const book = (await storeGet($, "ledger")) ?? {};
-  const days = [...Array(7)].map((_, i) => dayKey(Date.now() - i * 86_400_000));
+  let keys = [];
+  try {
+    keys = (await $.store.keys()).filter((k) => k.startsWith("day:"));
+  } catch {
+    return;
+  }
+  const days = [...Array(7)].map((_, i) => dayKey(Date.now() - i * 86_400_000)).reverse();
+  const totals = Object.fromEntries(days.map((d) => [d, { usd: 0, turns: 0 }]));
+  const oldest = dayKey(Date.now() - LEDGER_DAYS * 86_400_000);
+  for (const k of keys) {
+    const d = k.split(":")[1];
+    if (d < oldest) {
+      try { await $.store.delete(k); } catch { /* keep */ }
+      continue;
+    }
+    if (!totals[d]) continue;
+    const v = await storeGet($, k);
+    totals[d].usd += v?.spent ?? 0;
+    totals[d].turns += v?.turns ?? 0;
+  }
+  const today = totals[days.at(-1)];
   await $.state.set(LEDGER, {
-    date: days[0],
-    today: book[days[0]]?.usd ?? 0,
-    todayTurns: book[days[0]]?.turns ?? 0,
-    week: days.reduce((s, d) => s + (book[d]?.usd ?? 0), 0),
-    days: days.reverse().map((d) => book[d]?.usd ?? 0),
+    date: days.at(-1),
+    today: today.usd,
+    todayTurns: today.turns,
+    week: days.reduce((s, d) => s + totals[d].usd, 0),
+    days: days.map((d) => totals[d].usd),
   });
 }
 
@@ -463,6 +505,7 @@ async function takeReading($) {
   const usage = await $.session.usage();
   const { value: prev } = await $.state.get(READING);
   await $.state.set(READING, mergeReading(prev, { ...usage, model: await $.session.model() }));
+  await syncLedger($);
   await takeGit($);
 }
 
@@ -912,7 +955,7 @@ function drawItem(it, x) {
     const ls = TRACK[kind] ? ` letter-spacing="${TRACK[kind]}"` : "";
     return `<text class="${cls}" x="${x.toFixed(1)}" y="${(MID + fs * 0.36).toFixed(1)}" font-size="${fs}" font-weight="${weight}"${ls}>${esc(s)}</text>`;
   };
-  if (it.label != null) return text("label", it.label, "lb");
+  if (it.label != null) return text("label", it.label, it.cls ?? "lb");
   if (it.value != null) return text("value", it.value, it.tone ?? "fg");
   if (it.aside != null) return text("aside", it.aside, it.tone ?? "mu");
   if (it.icon) {
@@ -952,13 +995,19 @@ function compactSpan(s) {
 const PILL_TONES = ["green", "yellow", "red", "blue", "purple", "cyan"];
 function pillCss(i) {
   const fg = PAL.fg[i];
-  return PILL_TONES.map((k) => `.pb-${k}{fill:${PAL[k][i]};fill-opacity:${i ? 0.14 : 0.1};stroke:${PAL[k][i]};stroke-opacity:${i ? 0.3 : 0.28}}`).join("") +
+  return PILL_TONES.map((k) => `.pb-${k}{fill:${PAL[k][i]};fill-opacity:${i ? 0.17 : 0.12};stroke:${PAL[k][i]};stroke-opacity:${i ? 0.42 : 0.35}}`).join("") +
     `.pb-n{fill:${fg};fill-opacity:${i ? 0.06 : 0.045};stroke:${fg};stroke-opacity:${i ? 0.14 : 0.12}}`;
+}
+
+// Card tints: fainter than a pill, so four of them side by side stay calm.
+function cardCss(i) {
+  return PILL_TONES.map((k) => `.cb-${k}{fill:${PAL[k][i]};fill-opacity:${i ? 0.07 : 0.05};stroke:${PAL[k][i]};stroke-opacity:${i ? 0.2 : 0.18}}`).join("");
 }
 
 function svgPill(tone, items) {
   const GAP = 5, PADX = 10;
   let x = PADX, body = "";
+  items = items.map((it) => (it.label != null && tone && !it.cls ? { ...it, cls: tone } : it));
   items.forEach((it, j) => {
     if (j) x += it.tight ? 3 : GAP;
     body += drawItem(it, x);
@@ -990,7 +1039,7 @@ function desktopRow({ Svg, Link }, { u, git, working, budget, ledger }) {
     const items = [{ label: limitLabel(rl).toUpperCase() }, { bar: { pct: p, pace: pace?.elapsed, tone } }, { value: `${p}%`, tone }];
     if (pace?.projected != null && pace.projected >= 100) items.push({ aside: `→${Math.min(999, Math.round(pace.projected))}%`, tone, tight: true });
     if (reset) items.push({ aside: `↻${compactSpan(reset)}` });
-    add(left, `rl-${rl.kind}`, tone === "green" ? null : tone, items, `${limitLabel(rl)} ${p}%${reset ? ` resets in ${reset}` : ""}`);
+    add(left, `rl-${rl.kind}`, tone, items, `${limitLabel(rl)} ${p}%${reset ? ` resets in ${reset}` : ""}`);
   }
 
   if (u?.context?.window) {
@@ -998,7 +1047,7 @@ function desktopRow({ Svg, Link }, { u, git, working, budget, ledger }) {
     const tone = CTX_TONE(pct);
     const items = [{ label: "CTX" }, { bar: { pct, tone } }, { value: `${pct}%`, tone }, { aside: `${short(u.context.tokens ?? 0)}/${short(u.context.window)}` }];
     if (u.delta) items.push({ aside: u.delta > 0 ? `+${short(u.delta)}` : `−${short(-u.delta)}`, tone });
-    add(left, "ctx", pct >= 75 ? tone : null, items, `context ${pct}%`);
+    add(left, "ctx", tone, items, `context ${pct}%`);
   }
 
   if (working != null) add(left, "turn", "purple", [{ dot: true, tone: "purple" }, { value: mmss(working), tone: "purple", tight: true }], `turn ${mmss(working)}`);
@@ -1010,7 +1059,7 @@ function desktopRow({ Svg, Link }, { u, git, working, budget, ledger }) {
     if (git.untracked) items.push({ aside: `?${git.untracked}` });
     const sync = [git.ahead && `↑${git.ahead}`, git.behind && `↓${git.behind}`].filter(Boolean).join(" ");
     if (sync) items.push({ aside: sync });
-    add(right, "git", null, items, `git ${gitText(git)}`);
+    add(right, "git", "cyan", items, `git ${gitText(git)}`);
   }
 
   if (git?.pr) {
@@ -1025,11 +1074,11 @@ function desktopRow({ Svg, Link }, { u, git, working, budget, ledger }) {
   if (typeof u?.cost?.usd === "number") {
     const use = budgetUse(budget, u, ledger);
     const tone = budgetTone(use);
-    const items = [{ value: `$${u.cost.usd.toFixed(2)}`, tone: tone && tone !== "green" ? tone : undefined }];
+    const items = [{ label: "COST" }, { value: `$${u.cost.usd.toFixed(2)}`, tone: tone && tone !== "green" ? tone : undefined }];
     if (use?.scope === "session") items.push({ aside: `/ $${use.limit.toFixed(0)}`, tight: true });
     const burn = burnRate(u);
     if (burn) items.push({ aside: `$${burn.toFixed(2)}/h` });
-    add(right, "cost", tone && tone !== "green" ? tone : null, items, `cost $${u.cost.usd.toFixed(2)}`);
+    add(right, "cost", tone && tone !== "green" ? tone : "yellow", items, `cost $${u.cost.usd.toFixed(2)}`);
   }
 
   if (ledger?.today > 0) {
@@ -1038,7 +1087,7 @@ function desktopRow({ Svg, Link }, { u, git, working, budget, ledger }) {
     const items = [{ label: "TODAY" }, { value: `$${ledger.today.toFixed(2)}`, tone: tone ?? undefined }];
     if (budget?.day) items.push({ aside: `/ $${budget.day.toFixed(0)}`, tight: true });
     if (ledger.week > ledger.today) items.push({ aside: `7d $${ledger.week.toFixed(0)}` });
-    add(right, "today", tone, items, `today $${ledger.today.toFixed(2)}`);
+    add(right, "today", tone ?? "green", items, `today $${ledger.today.toFixed(2)}`);
   }
 
   return { left, right };
@@ -1053,7 +1102,8 @@ const GRID_GAP = 8;
 const CAT_TONES = ["blue", "purple", "cyan", "green", "yellow", "red", "mu"];
 
 function desktopDetails({ Svg }, d, git, u) {
-  const W = CARD_W * 4 + GRID_GAP * 3;
+  const cardsShown = [d.ctx, d.cost != null, d.turns > 0, d.tools.length > 0].filter(Boolean).length || 1;
+  const W = Math.max(CARD_W * 2 + GRID_GAP, CARD_W * cardsShown + GRID_GAP * (cardsShown - 1));
   const t = (x, y, s, { size = 10, weight = 500, cls = "fg", anchor, ls } = {}) =>
     `<text class="${cls}" x="${x.toFixed(1)}" y="${y.toFixed(1)}" font-size="${size}" font-weight="${weight}"${anchor ? ` text-anchor="${anchor}"` : ""}${ls ? ` letter-spacing="${ls}"` : ""}>${esc(s)}</text>`;
   const w = (s, size) => [...s].length * size * CW;
@@ -1062,7 +1112,7 @@ function desktopDetails({ Svg }, d, git, u) {
     return s.length > max ? `${s.slice(0, Math.max(1, max - 1))}…` : s;
   };
   const P = 12; // card padding
-  const title = (x, s, right) => t(x + P, 19, s, { size: 8.5, weight: 700, cls: "lb", ls: 0.8 }) +
+  const title = (x, s, right, tone = "lb") => t(x + P, 19, s, { size: 8.5, weight: 700, cls: tone, ls: 0.8 }) +
     (right ? t(x + CARD_W - P, 19, fit(right.s, 9.5, CARD_W - 2 * P - w(s, 8.5) - 10), { size: 9.5, cls: right.cls ?? "mu", anchor: "end" }) : "");
   const big = (x, s, cls = "fg", side) => t(x + P, 45, s, { size: 19, weight: 700, cls }) +
     (side ? t(x + P + w(s, 19) + 6, 45, fit(side, 9.5, CARD_W - 2 * P - w(s, 19) - 6), { size: 9.5, cls: "mu" }) : "");
@@ -1075,14 +1125,17 @@ function desktopDetails({ Svg }, d, git, u) {
       return `<rect class="${cls}" x="${(x + P + i * (bw + 2.5)).toFixed(1)}" y="${(CARD_H - 10 - h).toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="1.5" opacity="${i === n - 1 ? 1 : 0.55}"/>`;
     }).join("");
   };
-  const card = (x) => `<rect class="card" x="${x}" y="0" width="${CARD_W}" height="${CARD_H}" rx="11"/>`;
+  const card = (x, tone) => `<rect class="cb-${tone}" x="${x + 0.5}" y=".5" width="${CARD_W - 1}" height="${CARD_H - 1}" rx="11"/>`;
   const at = (i) => i * (CARD_W + GRID_GAP);
   let body = "";
+  // only the cards with something to say, packed left
+  const show = [d.ctx && "context", d.cost != null && "spend", d.turns > 0 && "turns", d.tools.length > 0 && "tools"].filter(Boolean);
+  const slot = (name) => show.indexOf(name);
 
   // context
-  {
-    const x = at(0);
-    body += card(x) + title(x, "CONTEXT", d.ctx ? { s: `${short(d.ctx.tokens)}/${short(d.ctx.window)}` } : null);
+  if (slot("context") >= 0) {
+    const x = at(slot("context"));
+    body += card(x, "blue") + title(x, "CONTEXT", d.ctx ? { s: `${short(d.ctx.tokens)}/${short(d.ctx.window)}` } : null, "blue");
     if (d.ctx) {
       const warn = d.turnsLeft != null && d.turnsLeft < 5;
       body += big(x, `${d.ctx.pct}%`, CTX_TONE(d.ctx.pct), d.turnsLeft != null ? `≈${d.turnsLeft} turns left` : d.free != null ? `${short(d.free)} free` : null);
@@ -1111,31 +1164,31 @@ function desktopDetails({ Svg }, d, git, u) {
   }
 
   // spend
-  {
-    const x = at(1);
+  if (slot("spend") >= 0) {
+    const x = at(slot("spend"));
     const use = budgetUse(d.budget, u, d.ledger);
-    body += card(x) + title(x, "SPEND", use ? { s: `${Math.round(use.frac * 100)}% of $${use.limit.toFixed(0)}`, cls: budgetTone(use) } : d.burn ? { s: `$${d.burn.toFixed(2)}/h` } : null);
+    body += card(x, "yellow") + title(x, "SPEND", use ? { s: `${Math.round(use.frac * 100)}% of $${use.limit.toFixed(0)}`, cls: budgetTone(use) } : d.burn ? { s: `$${d.burn.toFixed(2)}/h` } : null, "yellow");
     if (d.cost != null) {
       body += big(x, `$${d.cost.toFixed(2)}`, "fg", d.ledger?.today > 0 ? `today $${d.ledger.today.toFixed(2)}` : d.burn && use ? `$${d.burn.toFixed(2)}/h` : null);
-      body += line(x, [d.lastCost && `last +$${d.lastCost.toFixed(2)}`, d.avgCost != null && `avg $${d.avgCost.toFixed(2)}`].filter(Boolean).join(" · ") || (d.turns ? "per turn from next turn" : "no turns yet"));
+      body += line(x, [d.lastCost && `last +$${d.lastCost.toFixed(2)}`, d.avgCost != null && `avg $${d.avgCost.toFixed(2)}`].filter(Boolean).join(" · ") || (d.turns ? "per turn from next turn" : d.session ? `over ${d.session}` : ""));
       body += cols(x, d.turnCosts, "yellow");
     }
   }
 
   // turns
-  {
-    const x = at(2);
+  if (slot("turns") >= 0) {
+    const x = at(slot("turns"));
     const hit = d.cacheHit;
-    body += card(x) + title(x, "TURNS", hit != null ? { s: `cache ${hit}%`, cls: hit >= 70 ? "green" : hit >= 40 ? "yellow" : "red" } : null);
+    body += card(x, "purple") + title(x, "TURNS", hit != null ? { s: `cache ${hit}%`, cls: hit >= 70 ? "green" : hit >= 40 ? "yellow" : "red" } : null, "purple");
     body += big(x, `${d.turns}`, "purple", d.turns ? `avg ${secs(d.avgMs)}` : "none yet");
     if (d.turns) body += line(x, [`max ${secs(d.maxMs)}`, d.out && `${short(d.out)} out`].filter(Boolean).join(" · "));
     body += cols(x, d.turnMs, "purple");
   }
 
   // tools
-  {
-    const x = at(3);
-    body += card(x) + title(x, "TOOLS", d.calls ? { s: `${d.calls} calls` } : null);
+  if (slot("tools") >= 0) {
+    const x = at(slot("tools"));
+    body += card(x, "cyan") + title(x, "TOOLS", d.calls ? { s: `${d.calls} calls` } : null, "cyan");
     const top = d.tools[0]?.[1] ?? 1;
     d.tools.forEach(([n, c], i) => {
       const ry = 36 + i * 15;
@@ -1169,7 +1222,7 @@ function desktopDetails({ Svg }, d, git, u) {
   }
 
   const height = fy + 6;
-  const cls = (i) => Object.entries(PAL).map(([k, v]) => `.${k}{fill:${v[i]}}`).join("");
+  const cls = (i) => Object.entries(PAL).map(([k, v]) => `.${k}{fill:${v[i]}}`).join("") + cardCss(i);
   const source = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${height}" viewBox="0 0 ${W} ${height}" font-family="${FONT}">` +
     `<style>${cls(0)}@media (prefers-color-scheme:dark){${cls(1)}}</style>${body}</svg>`;
   const alt = [d.ctx && `context ${d.ctx.pct}%`, d.cost != null && `cost $${d.cost.toFixed(2)}`, `${d.turns} turns`, d.cacheHit != null && `cache hit ${d.cacheHit}%`, `${d.calls} tool calls`].filter(Boolean).join(", ");

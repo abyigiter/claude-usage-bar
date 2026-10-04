@@ -12,13 +12,13 @@ Works in the Claude Code CLI and the Desktop app's Code tab. Requires Claude Cod
 
 Terminal: tinted chips, each glued into one unit so the row wraps between chips, never through one. Bars are thin `━` rules with the pace marker `╋` at the window's elapsed time; a fill past the marker means you are burning faster than the window allows.
 
-Desktop: each figure is a soft tinted pill with a hairline edge, tinted only when it needs attention. Session figures (limits, context, live turn) sit on the left; work and money (git, PR, cost, today) on the right; each side wraps as a group. Light and dark aware.
+Desktop: each figure is a tinted pill in its category's color (limits by status, context blue, turn purple, git cyan, PR by state, cost amber, today green), turning yellow or red as a budget or limit nears. Pills flow in one row and wrap as units. Detail cards carry matching tints, and cards with nothing to show are left out. Light and dark aware.
 
 Git shows lines added and removed against HEAD (`+421 −68`, staged and unstaged), untracked files (`?1`), and ahead/behind. When the GitHub CLI (`gh`) is installed and signed in, the branch's pull request shows too: number, state, review decision and CI (`✓` pass, `✗` fail, `●` running), colored by what needs attention. It is looked up again on a branch switch or every 5 minutes.
 
 Budgets: `/budget 10` sets a session budget, `/budget day 50` a daily one, `/budget off [day|session]` clears. A toast fires at 80% and at 100% of each, and once when your burn rate will cross the session budget within 15 minutes. The cost figure turns yellow, then red.
 
-Daily ledger: every turn's cost is added to a per-day ledger shared by all sessions (kept 30 days). The band shows today's spend, `/usage` today's turns and the last 7 days.
+Daily ledger: each session keeps its own running total per local day in the plugin store (kept 30 days); today is the sum over sessions. A session that began today counts in full, one carried over from an earlier day from its first reading today. The band shows today's spend, `/usage` today's turns and the last 7 days.
 
 PR links: `#144 ↗` opens the pull request. In the detail panel each failing check is its own link. While CI runs the PR is re-checked every minute, and a toast says when it passes or fails.
 

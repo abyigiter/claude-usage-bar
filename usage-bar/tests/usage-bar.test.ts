@@ -36,6 +36,9 @@ function stubStore(on) {
   const kv = new Map();
   on("store.get", ($, e) => ({ value: kv.get(e.key) }));
   on("store.set", ($, e) => { kv.set(e.key, e.value); return { value: undefined }; });
+  on("store.keys", () => ({ value: [...kv.keys()] }));
+  on("store.delete", ($, e) => { kv.delete(e.key); return { value: undefined }; });
+  on("session.id", () => ({ value: "sess-1" }));
 }
 
 async function mount($, plugin = "usage-bar") {
@@ -247,7 +250,8 @@ describe("usage-bar", () => {
     await $.turn.complete({ reason: "answer", answer: "ok", durationMs: 1000 } as any);
     expect(toasts.join("\n")).toContain("over the $5.00 budget");
     const r = await $.command.run({ command: "usage" } as any);
-    expect(r.text).toContain("Today: $1.18 over 1 turn");
+    // the session began today, so today counts all of it, not only the turns since load
+    if (new Date(Date.now() - 60 * 60_000).getDate() === new Date().getDate()) expect(r.text).toContain("Today: $5.50 over 1 turn");
     const ui = await mount($);
     expect(await ui.find({ type: "Text", text: /\/ \$5/ })).toBeDefined();
     await ui.unmount();
