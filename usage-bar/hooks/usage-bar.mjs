@@ -151,7 +151,10 @@ export function register(on) {
       const { value: turns = [] } = await $.state.get(TURNS);
       const { value: map } = await $.state.get(CTXMAP);
       const d = { ...insights(u, a, turns, map), budget, ledger };
-      body.push(isDesktop ? desktopDetails(els, d, git, u) : terminalDetails(els, d, git, u, view.columns));
+      // the panel sits on the header's own inset, so cards line up with the pills
+      body.push(isDesktop
+        ? Box({ key: "details-box", flexDirection: "column", paddingX: 1, paddingTop: 1, children: [desktopDetails(els, d, git, u)] })
+        : terminalDetails(els, d, git, u, view.columns));
       const links = prLinks(els, git?.pr);
       if (links) body.push(links);
     }
@@ -165,7 +168,7 @@ function prLinks({ Box, Text, Link }, pr) {
   if (!pr?.failing?.length) return null;
   const kids = [Text({ children: "✗ failing ", color: "red", bold: true })];
   pr.failing.forEach((c, i) => kids.push(...(i ? [Text({ children: " · ", dimColor: true })] : []), Link({ href: c.url, label: c.name })));
-  return Box({ key: "pr-links", flexDirection: "row", flexWrap: "wrap", alignItems: "center", paddingX: 2, children: kids });
+  return Box({ key: "pr-links", flexDirection: "row", flexWrap: "wrap", alignItems: "center", paddingX: 1, children: kids });
 }
 
 // One record per main-loop turn: how long, what it cost, what it read and wrote.
@@ -1207,7 +1210,7 @@ function desktopDetails({ Svg }, d, git, u) {
     u?.model && ["MODEL", prettyModel(u.model)],
     d.session && ["SESSION", d.session],
   ].filter(Boolean);
-  let fx = 4;
+  let fx = 1; // the cards' left edge
   for (const [k, v] of foot) {
     const kw = w(k, 8.5) + k.length * 0.8;
     const room = W - fx - kw - 8;
