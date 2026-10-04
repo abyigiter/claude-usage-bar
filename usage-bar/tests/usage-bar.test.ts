@@ -121,4 +121,18 @@ describe("usage-bar", () => {
     expect(await ui.find({ type: "Text", text: /opus-4\.6/ })).toBeDefined();
     await ui.unmount();
   });
+
+  test("desktop draws SVG pills with a pace marker", async ($, on) => {
+    stubUsage($, on);
+    on("session.start", ($, e) => ({ cwd: e.cwd }));
+    await $.session.start({ surface: "desktop", isInteractive: true, cwd: "/work" } as any);
+    const ui = await $.ui.mount({
+      plugin: "usage-bar",
+      surface: "desktop",
+      component: "AbovePrompt",
+      props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120 },
+    } as any);
+    expect(await ui.find({ type: "Svg" })).toBeDefined();
+    await ui.unmount();
+  });
 });

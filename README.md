@@ -10,6 +10,8 @@ Works in the Claude Code CLI and the Desktop app's Code tab. Requires Claude Cod
  5h  ▰▰▱▱▱▱▱▱  20%  2h 40m   7d  ▰▰▰▰▰▱▱▱  58%  1d 7h   ☂ 115.5k / 1M 12% ▂▃▂ ▲+8.1k   $1.28   1h 23m   ✎ 3 · 14 calls   sonnet-5.5
 ```
 
+On the desktop app the pills are rounded, tinted, and icon-led, light and dark aware. Each limit bar carries a pace marker (`┃` in the terminal) showing how far into the window you are, so a fill past the marker means you are burning faster than the window allows. A limit turns yellow when your current pace would hit 100% before reset, red past 150% pace or 90% used. `/usage` says when you would hit the limit.
+
 Segments are pill-styled and color-coded; each hides when empty or narrow:
 
 - **5h / 7d** — percent of each rate-limit window used, bar and reset countdown,
