@@ -1,5 +1,27 @@
 {
   "name": "abyigiter-mods",
-  "owner": { "name": "Bugra Yigiter", "url": "https://github.com/abyigiter" },
-  "plugins": [{ "name": "usage-bar", "source": "./usage-bar" }]
+  "description": "Claude Code mods by Bugra Yigiter: a live usage, cost and git band above the prompt.",
+  "owner": {
+    "name": "Bugra Yigiter",
+    "url": "https://github.com/abyigiter"
+  },
+  "plugins": [
+    {
+      "name": "usage-bar",
+      "source": "./usage-bar",
+      "description": "See your Claude Code session at a glance: context left, cost and today's spend, rate limits, git diff and PR status, right above the prompt. Set /budget limits and get a toast before you go over. Open the detail panel for context breakdown, turns, cache hit rate and top tools. Works in the CLI and the desktop Code tab.",
+      "category": "productivity",
+      "keywords": [
+        "usage",
+        "cost",
+        "budget",
+        "context",
+        "rate-limits",
+        "statusline",
+        "git",
+        "pull-request"
+      ],
+      "homepage": "https://github.com/abyigiter/claude-usage-bar"
+    }
+  ]
 }

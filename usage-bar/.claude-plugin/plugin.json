@@ -1,7 +1,22 @@
 {
   "name": "usage-bar",
-  "version": "1.0.0",
-  "description": "Live band above the prompt: context, spend and budgets, today across sessions, rate limits, git diff and PR status, with a detail panel for context breakdown, turns, cache hit rate and tools.",
-  "author": { "name": "Bugra Yigiter", "url": "https://github.com/abyigiter" },
-  "types": "./types/index.d.ts"
+  "version": "1.0.1",
+  "description": "See your Claude Code session at a glance: context left, cost and today's spend, rate limits, git diff and PR status, right above the prompt. Set /budget limits and get a toast before you go over. Open the detail panel for context breakdown, turns, cache hit rate and top tools. Works in the CLI and the desktop Code tab.",
+  "author": {
+    "name": "Bugra Yigiter",
+    "url": "https://github.com/abyigiter"
+  },
+  "types": "./types/index.d.ts",
+  "homepage": "https://github.com/abyigiter/claude-usage-bar",
+  "repository": "https://github.com/abyigiter/claude-usage-bar",
+  "keywords": [
+    "usage",
+    "cost",
+    "budget",
+    "context",
+    "rate-limits",
+    "statusline",
+    "git",
+    "pull-request"
+  ]
 }
