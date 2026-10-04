@@ -186,12 +186,34 @@ describe("usage-bar", () => {
       if (surface === "desktop") {
         const svgs: any[] = await ui.findAll({ type: "Svg" } as any);
         const svg = svgs.find((x) => String(x.props.source).includes("TURNS"));
-        expect(svg.props.source).toContain("cache hit 90%");
+        expect(svg.props.source).toContain("cache 90%");
       } else {
         expect(await ui.find({ type: "Text", text: /90%/ })).toBeDefined();
       }
       await ui.press({ key: "more" } as any);
       await ui.unmount();
     }
+  });
+
+  test("git shows lines added and removed, and the branch's PR", async ($, on) => {
+    stubUsage($, on);
+    on("process.run", ($, e) => {
+      const argv = e.argv ?? e.command ?? [];
+      const cmd = argv.join(" ");
+      if (cmd.startsWith("git status")) return { value: { exitCode: 0, stdout: "## feat/x...origin/feat/x\n M a.go\n?? b.go\n", stderr: "" } };
+      if (cmd.startsWith("git diff")) return { value: { exitCode: 0, stdout: " 2 files changed, 421 insertions(+), 68 deletions(-)\n", stderr: "" } };
+      if (cmd.startsWith("gh pr view")) return { value: { exitCode: 0, stdout: JSON.stringify({ number: 144, state: "OPEN", isDraft: false, reviewDecision: "APPROVED", statusCheckRollup: [{ conclusion: "SUCCESS" }, { conclusion: "FAILURE" }] }), stderr: "" } };
+      return { value: { exitCode: 1, stdout: "", stderr: "" } };
+    });
+    on("session.start", ($, e) => ({ cwd: e.cwd }));
+    await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
+    const ui = await mount($);
+    expect(await ui.find({ type: "Text", text: /\+421/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /−68/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /#144/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /✗ ci/ })).toBeDefined();
+    await ui.unmount();
+    const r = await $.command.run({ command: "usage" } as any);
+    expect(r.text).toContain("PR #144 open approved ✗ checks");
   });
 });

@@ -7,14 +7,16 @@ Works in the Claude Code CLI and the Desktop app's Code tab. Requires Claude Cod
 2.1.287 or later.
 
 ```
- 5h ━━━╋━━ 62% ↻ 1h 40m   ctx ━━━━━━ 14% 138.8k/1M ▂▃▅▇ ▲ +5.1k   $2.32 $10.71/h   ● 0:42   git main ±3 ↑1   30 calls ✎ 2   13m   opus-5.5   ▾ more
+ 5h ━━━╋━━ 62% ↻ 1h 40m   ctx ━━━━━━ 14% 138.8k/1M ▂▃▅▇ ▲ +5.1k   $2.32 $10.71/h   ● 0:42   git main +421 −68 ?1 ↑1   PR #144 open ✓ approved ● ci   30 calls ✎ 2   13m   opus-5.5   ▾ more
 ```
 
 Terminal: tinted chips, each glued into one unit so the row wraps between chips, never through one. Bars are thin `━` rules with the pace marker `╋` at the window's elapsed time; a fill past the marker means you are burning faster than the window allows.
 
 Desktop: one SVG strip on the band's own background (two that wrap when the composer is narrow). Light and dark aware.
 
-`▾ more` opens the detail panel (desktop: four cards; terminal: aligned rows):
+Git shows lines added and removed against HEAD (`+421 −68`, staged and unstaged), untracked files (`?1`), and ahead/behind. When the GitHub CLI (`gh`) is installed and signed in, the branch's pull request shows too: number, state, review decision and CI (`✓` pass, `✗` fail, `●` running), colored by what needs attention. It is looked up again on a branch switch or every 5 minutes.
+
+`▾ more` opens the detail panel (desktop: four cards in one row; terminal: aligned rows):
 
 - **Context**: stacked bar by `/context` category (messages, tools, system prompt, memory, skills), and when auto-compact kicks in, in tokens and in turns at your average growth.
 - **Spend**: total, burn rate, last turn, average per turn, a bar per turn.

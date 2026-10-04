@@ -16,6 +16,7 @@ const BAR_WIDTH = 8;
 const BARS = "▁▂▃▄▅▆▇█";
 const HISTORY = 12;
 const TURN_LOG = 24;
+const PR_TTL = 5 * 60_000;
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 let commandName;
 let turnStart = 0; // ms, 0 when no turn is running
@@ -26,7 +27,7 @@ export function register(on) {
     await takeReading($);
     $.clock.every(60_000, () => takeReading($)); // keep reset countdowns fresh
     $.clock.every(1000, () => { // live turn timer: redraw each second while a turn runs
-      if (turnStart && Date.now() - turnStart < 2 * 3_600_000) $.state.set(TURN, { startedAt: turnStart, tick: Date.now() });
+      if (turnStart && Date.now() - turnStart < 2 * 3_600_000) $.state.get(TURN).then(({ value: t }) => $.state.set(TURN, { ...t, startedAt: turnStart, tick: Date.now() }));
     });
     for (const name of ["usage", "context"]) {
       try {
@@ -45,7 +46,8 @@ export function register(on) {
 
   on("prompt.submit", async ($, e, next) => {
     turnStart = Date.now();
-    await $.state.set(TURN, { startedAt: turnStart, tick: turnStart });
+    const { value: u } = await $.state.get(READING);
+    await $.state.set(TURN, { startedAt: turnStart, tick: turnStart, costAt: u?.cost?.usd });
     return next(e);
   });
 
@@ -76,10 +78,10 @@ export function register(on) {
     const result = await next(e);
     if (!e.agentId) { // main-loop turns only
       turnStart = 0;
-      const { value: before } = await $.state.get(READING);
       await takeReading($);
       const { value: after } = await $.state.get(READING);
-      await logTurn($, e, before, after);
+      const { value: turn } = await $.state.get(TURN);
+      await logTurn($, e, turn?.costAt, after);
       const { value: ui } = await $.state.get(UI);
       if (ui?.expanded) await takeBreakdown($);
     }
@@ -128,8 +130,10 @@ export function register(on) {
 }
 
 // One record per main-loop turn: how long, what it cost, what it read and wrote.
-async function logTurn($, e, before, after) {
-  const usd = typeof after?.cost?.usd === "number" && typeof before?.cost?.usd === "number" ? Math.max(0, after.cost.usd - before.cost.usd) : null;
+// The cost is measured from the prompt's submit: session.measure has already
+// moved the reading by the time the turn completes.
+async function logTurn($, e, costAt, after) {
+  const usd = typeof after?.cost?.usd === "number" && typeof costAt === "number" ? Math.max(0, after.cost.usd - costAt) : null;
   const k = e.usage ?? {};
   const rec = {
     ms: e.durationMs ?? 0,
@@ -251,7 +255,29 @@ function usageLines(u = {}, a = { calls: 0, files: [] }, git, turns = []) {
 }
 
 function gitText(g) {
-  return [g.branch, g.dirty && `${g.dirty} changed`, g.ahead && `↑${g.ahead}`, g.behind && `↓${g.behind}`].filter(Boolean).join("  ·  ");
+  return [
+    g.branch,
+    (g.added || g.removed) && `+${g.added ?? 0} −${g.removed ?? 0}`,
+    g.untracked && `${g.untracked} new`,
+    g.ahead && `↑${g.ahead}`,
+    g.behind && `↓${g.behind}`,
+    g.pr && prText(g.pr),
+  ].filter(Boolean).join("  ·  ");
+}
+
+function prText(pr) {
+  const checks = { pass: "✓ checks", fail: "✗ checks", pending: "● checks" }[pr.checks];
+  const review = { approved: "approved", changes: "changes requested" }[pr.review];
+  return [`PR #${pr.number} ${pr.state}`, review, checks].filter(Boolean).join(" ");
+}
+
+// PR tone: what needs attention first (failing checks, requested changes).
+function prTone(pr) {
+  if (pr.checks === "fail" || pr.review === "changes" || pr.state === "closed") return "red";
+  if (pr.state === "merged") return "purple";
+  if (pr.state === "draft") return "slate";
+  if (pr.checks === "pending") return "yellow";
+  return "green";
 }
 
 // dollars per hour since the session began; needs a few minutes to mean anything
@@ -281,17 +307,65 @@ async function takeGit($) {
       const [head, ...rest] = r.stdout.split("\n");
       const m = /^## (?:No commits yet on |Initial commit on )?(.+?)(?:\.\.\.\S+)?(?: \[(.*)\])?$/.exec(head);
       const track = m?.[2] ?? "";
+      const files = rest.filter(Boolean);
       git = {
         branch: m?.[1]?.startsWith("HEAD (no branch)") ? "detached" : m?.[1],
-        dirty: rest.filter(Boolean).length,
+        dirty: files.length,
+        untracked: files.filter((l) => l.startsWith("??")).length,
         ahead: +(/ahead (\d+)/.exec(track)?.[1] ?? 0),
         behind: +(/behind (\d+)/.exec(track)?.[1] ?? 0),
+        ...(await diffStat($)),
       };
     }
   } catch {
     // not a repo, or no git
   }
+  const { value: prev } = await $.state.get(GIT);
+  // the PR changes rarely: look again on a branch switch or every few minutes
+  const stale = !prev?.prCheckedAt || prev.branch !== git.branch || Date.now() - prev.prCheckedAt > PR_TTL;
+  if (git.branch && git.branch !== "detached" && stale) Object.assign(git, await lookupPr($));
+  else if (git.branch && prev?.branch === git.branch) Object.assign(git, { pr: prev.pr, prCheckedAt: prev.prCheckedAt });
   await $.state.set(GIT, git);
+}
+
+// Lines added and removed against HEAD, staged and unstaged together.
+async function diffStat($) {
+  try {
+    const r = await $.process.run(["git", "diff", "HEAD", "--shortstat"], { timeoutMs: 3000 });
+    if (r.exitCode !== 0) return {};
+    return {
+      added: +(/(\d+) insertion/.exec(r.stdout)?.[1] ?? 0),
+      removed: +(/(\d+) deletion/.exec(r.stdout)?.[1] ?? 0),
+    };
+  } catch {
+    return {};
+  }
+}
+
+// The branch's pull request through the GitHub CLI; nothing when gh is missing,
+// signed out, or the branch has none.
+async function lookupPr($) {
+  const checkedAt = Date.now();
+  try {
+    const r = await $.process.run(["gh", "pr", "view", "--json", "number,state,isDraft,reviewDecision,statusCheckRollup"], { timeoutMs: 8000 });
+    if (r.exitCode !== 0) return { pr: null, prCheckedAt: checkedAt };
+    const p = JSON.parse(r.stdout);
+    const runs = (p.statusCheckRollup ?? []).map((c) => (c.conclusion || c.state || c.status || "").toUpperCase());
+    const checks = !runs.length ? null
+      : runs.some((x) => ["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"].includes(x)) ? "fail"
+      : runs.every((x) => ["SUCCESS", "NEUTRAL", "SKIPPED"].includes(x)) ? "pass" : "pending";
+    return {
+      pr: {
+        number: p.number,
+        state: p.isDraft ? "draft" : String(p.state ?? "").toLowerCase(),
+        review: p.reviewDecision === "APPROVED" ? "approved" : p.reviewDecision === "CHANGES_REQUESTED" ? "changes" : null,
+        checks,
+      },
+      prCheckedAt: checkedAt,
+    };
+  } catch {
+    return { pr: null, prCheckedAt: checkedAt };
+  }
 }
 
 // Deltas are how much the last turn added to context and to cost. Both
@@ -344,6 +418,8 @@ function chip(Text, tone, parts, key) {
     accent: { color: ac },
     off: { color: mu, dimColor: true },
     mark: { color: fg, bold: true },
+    add: { color: "#6fdc9a", bold: true },
+    del: { color: "#f5806f", bold: true },
   };
   const last = parts.length - 1;
   return {
@@ -401,10 +477,20 @@ function terminalRow({ Box, Text }, { u, a, git, working, columns }) {
 
   if (git?.branch && wide) {
     const parts = [["git ", "label"], [git.branch.length > 24 ? `${git.branch.slice(0, 23)}…` : git.branch, "value"]];
-    if (git.dirty) parts.push([` ±${git.dirty}`, "accent"]);
+    if (git.added || git.removed) parts.push([` +${git.added ?? 0}`, "add"], [` −${git.removed ?? 0}`, "del"]);
+    else if (git.dirty) parts.push([` ±${git.dirty}`, "accent"]);
+    if (git.untracked) parts.push([` ?${git.untracked}`, "aside"]);
     const sync = [git.ahead && `↑${git.ahead}`, git.behind && `↓${git.behind}`].filter(Boolean).join(" ");
     if (sync) parts.push([` ${sync}`, "aside"]);
     chips.push(chip(Text, "cyan", parts, "git"));
+  }
+
+  if (git?.pr && wide) {
+    const pr = git.pr;
+    const parts = [["PR ", "label"], [`#${pr.number}`, "value"], [` ${pr.state}`, "aside"]];
+    if (pr.review) parts.push([pr.review === "approved" ? " ✓ approved" : " ✗ changes", pr.review === "approved" ? "add" : "del"]);
+    if (pr.checks) parts.push([{ pass: " ✓ ci", fail: " ✗ ci", pending: " ● ci" }[pr.checks], { pass: "add", fail: "del", pending: "accent" }[pr.checks]]);
+    chips.push(chip(Text, prTone(pr), parts, "pr"));
   }
 
   if (a?.calls && wide) {
@@ -728,9 +814,18 @@ function desktopRow({ Svg }, { u, a, git, working }) {
 
   if (git?.branch) {
     const items = [{ icon: "branch" }, { value: git.branch.length > 18 ? `${git.branch.slice(0, 17)}…` : git.branch, tight: true }];
-    if (git.dirty) items.push({ aside: `±${git.dirty}`, tone: "yellow" });
+    if (git.added || git.removed) items.push({ aside: `+${git.added ?? 0}`, tone: "green" }, { aside: `−${git.removed ?? 0}`, tone: "red", tight: true });
+    else if (git.dirty) items.push({ aside: `±${git.dirty}`, tone: "yellow" });
+    if (git.untracked) items.push({ aside: `?${git.untracked}` });
     const sync = [git.ahead && `↑${git.ahead}`, git.behind && `↓${git.behind}`].filter(Boolean).join(" ");
     if (sync) items.push({ aside: sync });
+    extra.push(items);
+  }
+  if (git?.pr) {
+    const pr = git.pr, tone = prTone(pr);
+    const items = [{ label: "PR" }, { value: `#${pr.number}`, tone }, { aside: pr.state }];
+    if (pr.review) items.push({ aside: pr.review === "approved" ? "✓ approved" : "✗ changes", tone: pr.review === "approved" ? "green" : "red" });
+    if (pr.checks) items.push({ aside: { pass: "✓ ci", fail: "✗ ci", pending: "● ci" }[pr.checks], tone: { pass: "green", fail: "red", pending: "yellow" }[pr.checks] });
     extra.push(items);
   }
   const burn = burnRate(u);
@@ -738,7 +833,7 @@ function desktopRow({ Svg }, { u, a, git, working }) {
   if (u?.cost?.usd > 0) extra.push([{ value: `$${u.cost.usd.toFixed(2)}` }, ...(burn ? [{ aside: `$${burn.toFixed(2)}/h` }] : [])]);
   if (dur) extra.push([{ label: "SESSION" }, { value: dur }]);
 
-  const extraAlt = [u?.cost?.usd > 0 && `cost $${u.cost.usd.toFixed(2)}`, git?.branch && `git ${git.branch}`, dur && `session ${dur}`].filter(Boolean);
+  const extraAlt = [u?.cost?.usd > 0 && `cost $${u.cost.usd.toFixed(2)}`, git?.branch && `git ${git.branch}`, git?.pr && prText(git.pr), dur && `session ${dur}`].filter(Boolean);
   // one strip when both fit a typical composer, two that wrap otherwise
   if (core.length && extra.length && svgStrip([...core, ...extra]).width <= 720) {
     const { source, width } = svgStrip([...core, ...extra]);
@@ -754,125 +849,129 @@ function desktopRow({ Svg }, { u, a, git, working }) {
 }
 
 // ---- desktop: detail cards ---------------------------------------------------
-// Four cards in a 2×2 grid (context, spend, turns, tools) and a footer line,
-// drawn as one SVG on the same palette as the strip.
-const CARD_W = 300;
-const CARD_H = 124;
-const GRID_GAP = 10;
+// Four compact cards in one row (context, spend, turns, tools) over a footer
+// line, as one SVG about 130px tall so the band shows it whole.
+const CARD_W = 184;
+const CARD_H = 108;
+const GRID_GAP = 8;
 const CAT_TONES = ["blue", "purple", "cyan", "green", "yellow", "red", "mu"];
 
 function desktopDetails({ Svg }, d, git, u) {
-  const W = CARD_W * 2 + GRID_GAP;
-  const t = (x, y, s, { size = 11, weight = 500, cls = "fg", anchor, ls } = {}) =>
+  const W = CARD_W * 4 + GRID_GAP * 3;
+  const t = (x, y, s, { size = 10, weight = 500, cls = "fg", anchor, ls } = {}) =>
     `<text class="${cls}" x="${x.toFixed(1)}" y="${y.toFixed(1)}" font-size="${size}" font-weight="${weight}"${anchor ? ` text-anchor="${anchor}"` : ""}${ls ? ` letter-spacing="${ls}"` : ""}>${esc(s)}</text>`;
   const w = (s, size) => [...s].length * size * CW;
-  const title = (x, y, s, right) => t(x + 14, y + 22, s, { size: 9, weight: 700, cls: "lb", ls: 0.8 }) + (right ? t(x + CARD_W - 14, y + 22, right.s, { size: 10, cls: right.cls ?? "mu", anchor: "end" }) : "");
-  const big = (x, y, s, cls = "fg", side) => t(x + 14, y + 52, s, { size: 22, weight: 700, cls }) + (side ? t(x + 14 + w(s, 22) + 8, y + 52, side, { size: 11, cls: "mu" }) : "");
-  const line = (x, y, s, cls = "mu") => t(x + 14, y + 72, s, { size: 10.5, cls });
-  const cols = (x, y, values, cls) => {
+  const fit = (s, size, room) => {
+    const max = Math.floor(room / (size * CW));
+    return s.length > max ? `${s.slice(0, Math.max(1, max - 1))}…` : s;
+  };
+  const P = 12; // card padding
+  const title = (x, s, right) => t(x + P, 19, s, { size: 8.5, weight: 700, cls: "lb", ls: 0.8 }) +
+    (right ? t(x + CARD_W - P, 19, fit(right.s, 9.5, CARD_W - 2 * P - w(s, 8.5) - 10), { size: 9.5, cls: right.cls ?? "mu", anchor: "end" }) : "");
+  const big = (x, s, cls = "fg", side) => t(x + P, 45, s, { size: 19, weight: 700, cls }) +
+    (side ? t(x + P + w(s, 19) + 6, 45, fit(side, 9.5, CARD_W - 2 * P - w(s, 19) - 6), { size: 9.5, cls: "mu" }) : "");
+  const line = (x, s, cls = "mu") => t(x + P, 62, fit(s, 9.5, CARD_W - 2 * P), { size: 9.5, cls });
+  const cols = (x, values, cls) => {
     if (values.length < 2) return "";
-    const top = Math.max(...values, 1e-9), n = values.length, gw = CARD_W - 28, bw = Math.min(10, (gw - (n - 1) * 3) / n);
+    const top = Math.max(...values, 1e-9), n = values.length, gw = CARD_W - 2 * P, bw = Math.min(8, (gw - (n - 1) * 2.5) / n);
     return values.map((v, i) => {
-      const h = Math.max(2, (v / top) * 30);
-      return `<rect class="${cls}" x="${(x + 14 + i * (bw + 3)).toFixed(1)}" y="${(y + CARD_H - 12 - h).toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="1.5" opacity="${i === n - 1 ? 1 : 0.55}"/>`;
+      const h = Math.max(2, (v / top) * 26);
+      return `<rect class="${cls}" x="${(x + P + i * (bw + 2.5)).toFixed(1)}" y="${(CARD_H - 10 - h).toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="1.5" opacity="${i === n - 1 ? 1 : 0.55}"/>`;
     }).join("");
   };
-  const card = (x, y) => `<rect class="card" x="${x}" y="${y}" width="${CARD_W}" height="${CARD_H}" rx="12"/>`;
+  const card = (x) => `<rect class="card" x="${x}" y="0" width="${CARD_W}" height="${CARD_H}" rx="11"/>`;
+  const at = (i) => i * (CARD_W + GRID_GAP);
   let body = "";
 
   // context
   {
-    const x = 0, y = 0;
-    body += card(x, y);
-    const warn = d.turnsLeft != null && d.turnsLeft < 5;
-    body += title(x, y, "CONTEXT", d.free != null ? { s: `compacts in ${short(d.free)}${d.turnsLeft != null ? ` · ≈${d.turnsLeft} turns` : ""}`, cls: warn ? "red" : "mu" } : null);
+    const x = at(0);
+    body += card(x) + title(x, "CONTEXT", d.ctx ? { s: `${short(d.ctx.tokens)}/${short(d.ctx.window)}` } : null);
     if (d.ctx) {
-      body += big(x, y, `${d.ctx.pct}%`, CTX_TONE(d.ctx.pct), `${short(d.ctx.tokens)} of ${short(d.ctx.window)}`);
-      const bx = x + 14, by = y + 64, bw = CARD_W - 28;
-      body += `<rect class="track" x="${bx}" y="${by}" width="${bw}" height="8" rx="4"/>`;
+      const warn = d.turnsLeft != null && d.turnsLeft < 5;
+      body += big(x, `${d.ctx.pct}%`, CTX_TONE(d.ctx.pct), d.turnsLeft != null ? `≈${d.turnsLeft} turns left` : d.free != null ? `${short(d.free)} free` : null);
+      if (warn) body += t(x + CARD_W - P, 45, "compact soon", { size: 9, cls: "red", anchor: "end" });
+      const bx = x + P, by = 54, bw = CARD_W - 2 * P;
+      body += `<rect class="track" x="${bx}" y="${by}" width="${bw}" height="6" rx="3"/>`;
       if (d.used.length) {
         let cx = bx;
-        body += `<clipPath id="cb"><rect x="${bx}" y="${by}" width="${bw}" height="8" rx="4"/></clipPath><g clip-path="url(#cb)">`;
+        body += `<clipPath id="cb"><rect x="${bx}" y="${by}" width="${bw}" height="6" rx="3"/></clipPath><g clip-path="url(#cb)">`;
         d.used.forEach((c, i) => {
           const cw = (c.tokens / d.ctx.window) * bw;
-          if (cw > 0.5) body += `<rect class="${CAT_TONES[i % CAT_TONES.length]}" x="${cx.toFixed(1)}" y="${by}" width="${Math.max(1, cw - 1).toFixed(1)}" height="8"/>`;
+          if (cw > 0.5) body += `<rect class="${CAT_TONES[i % CAT_TONES.length]}" x="${cx.toFixed(1)}" y="${by}" width="${Math.max(1, cw - 1).toFixed(1)}" height="6"/>`;
           cx += cw;
         });
         body += "</g>";
-        d.used.slice(0, 4).forEach((c, i) => {
-          const lx = x + 14 + (i % 2) * 140, ly = y + 92 + Math.floor(i / 2) * 16;
-          const name = c.name.length > 13 ? `${c.name.slice(0, 12)}…` : c.name;
-          body += `<circle class="${CAT_TONES[i % CAT_TONES.length]}" cx="${lx + 3}" cy="${ly - 3.5}" r="3"/>`;
-          body += t(lx + 11, ly, name, { size: 10, cls: "mu" }) + t(lx + 132, ly, short(c.tokens), { size: 10, weight: 650, anchor: "end" });
+        d.used.slice(0, 3).forEach((c, i) => {
+          const ly = 76 + i * 12.5;
+          body += `<circle class="${CAT_TONES[i % CAT_TONES.length]}" cx="${bx + 3}" cy="${ly - 3.2}" r="2.6"/>`;
+          body += t(bx + 10, ly, fit(c.name, 9, bw - 50), { size: 9, cls: "mu" }) + t(bx + bw, ly, short(c.tokens), { size: 9, weight: 650, anchor: "end" });
         });
       } else {
-        body += `<rect class="${CTX_TONE(d.ctx.pct)}" x="${bx}" y="${by}" width="${Math.max(d.ctx.pct > 0 ? 4 : 0, (d.ctx.pct / 100) * bw).toFixed(1)}" height="8" rx="4"/>`;
-        body += t(x + 14, y + 96, "breakdown loads after the next turn", { size: 10, cls: "lb" });
+        body += `<rect class="${CTX_TONE(d.ctx.pct)}" x="${bx}" y="${by}" width="${Math.max(d.ctx.pct > 0 ? 3 : 0, (d.ctx.pct / 100) * bw).toFixed(1)}" height="6" rx="3"/>`;
+        body += t(bx, 80, "breakdown after next turn", { size: 9, cls: "lb" });
       }
     }
   }
 
   // spend
   {
-    const x = CARD_W + GRID_GAP, y = 0;
-    body += card(x, y);
-    body += title(x, y, "SPEND", d.burn ? { s: `$${d.burn.toFixed(2)}/h` } : null);
+    const x = at(1);
+    body += card(x) + title(x, "SPEND", d.burn ? { s: `$${d.burn.toFixed(2)}/h` } : null);
     if (d.cost != null) {
-      body += big(x, y, `$${d.cost.toFixed(2)}`, "fg");
-      body += line(x, y, [d.lastCost && `last +$${d.lastCost.toFixed(2)}`, d.avgCost != null && `avg $${d.avgCost.toFixed(2)}/turn`].filter(Boolean).join("  ·  ") || "no turns yet");
-      body += cols(x, y, d.turnCosts, "yellow");
+      body += big(x, `$${d.cost.toFixed(2)}`, "fg");
+      body += line(x, [d.lastCost && `last +$${d.lastCost.toFixed(2)}`, d.avgCost != null && `avg $${d.avgCost.toFixed(2)}`].filter(Boolean).join(" · ") || (d.turns ? "per turn from next turn" : "no turns yet"));
+      body += cols(x, d.turnCosts, "yellow");
     }
   }
 
   // turns
   {
-    const x = 0, y = CARD_H + GRID_GAP;
-    body += card(x, y);
-    body += title(x, y, "TURNS", d.cacheHit != null ? { s: `cache hit ${d.cacheHit}%`, cls: d.cacheHit >= 70 ? "green" : d.cacheHit >= 40 ? "yellow" : "red" } : null);
-    body += big(x, y, `${d.turns}`, "purple", d.turns ? `avg ${secs(d.avgMs)} · max ${secs(d.maxMs)}` : "none yet");
-    if (d.out) body += line(x, y, `${short(d.out)} tokens written`);
-    body += cols(x, y, d.turnMs, "purple");
+    const x = at(2);
+    const hit = d.cacheHit;
+    body += card(x) + title(x, "TURNS", hit != null ? { s: `cache ${hit}%`, cls: hit >= 70 ? "green" : hit >= 40 ? "yellow" : "red" } : null);
+    body += big(x, `${d.turns}`, "purple", d.turns ? `avg ${secs(d.avgMs)}` : "none yet");
+    if (d.turns) body += line(x, [`max ${secs(d.maxMs)}`, d.out && `${short(d.out)} out`].filter(Boolean).join(" · "));
+    body += cols(x, d.turnMs, "purple");
   }
 
   // tools
   {
-    const x = CARD_W + GRID_GAP, y = CARD_H + GRID_GAP;
-    body += card(x, y);
-    body += title(x, y, "TOOLS", d.calls ? { s: `${d.calls} calls` } : null);
+    const x = at(3);
+    body += card(x) + title(x, "TOOLS", d.calls ? { s: `${d.calls} calls` } : null);
     const top = d.tools[0]?.[1] ?? 1;
     d.tools.forEach(([n, c], i) => {
-      const ry = y + 42 + i * 16;
-      const name = n.length > 14 ? `${n.slice(0, 13)}…` : n;
-      body += t(x + 14, ry, name, { size: 10, cls: "mu" });
-      const bx = x + 118, bw = CARD_W - 118 - 44;
-      body += `<rect class="track" x="${bx}" y="${ry - 6}" width="${bw}" height="5" rx="2.5"/>`;
-      body += `<rect class="cyan" x="${bx}" y="${ry - 6}" width="${Math.max(3, (c / top) * bw).toFixed(1)}" height="5" rx="2.5"/>`;
-      body += t(x + CARD_W - 14, ry, String(c), { size: 10, weight: 650, anchor: "end" });
+      const ry = 36 + i * 15;
+      body += t(x + P, ry, fit(n, 9, 66), { size: 9, cls: "mu" });
+      const bx = x + P + 70, bw = CARD_W - 2 * P - 70 - 22;
+      body += `<rect class="track" x="${bx}" y="${ry - 5}" width="${bw}" height="4" rx="2"/>`;
+      body += `<rect class="cyan" x="${bx}" y="${ry - 5}" width="${Math.max(3, (c / top) * bw).toFixed(1)}" height="4" rx="2"/>`;
+      body += t(x + CARD_W - P, ry, String(c), { size: 9, weight: 650, anchor: "end" });
     });
-    if (!d.tools.length) body += t(x + 14, y + 52, "no tool calls yet", { size: 10.5, cls: "lb" });
+    if (!d.tools.length) body += t(x + P, 45, "no tool calls yet", { size: 9.5, cls: "lb" });
   }
 
   // footer
-  const fy = CARD_H * 2 + GRID_GAP + 22;
+  const fy = CARD_H + 19;
   const foot = [
     d.files.length && ["EDITED", d.files.join(", ")],
-    git?.branch && ["GIT", gitText(git).replace(/ {2}· {2}/g, " · ")],
+    git?.pr && ["PR", prText(git.pr).replace(/^PR /, "")],
     u?.model && ["MODEL", prettyModel(u.model)],
     d.session && ["SESSION", d.session],
   ].filter(Boolean);
   let fx = 4;
   for (const [k, v] of foot) {
-    const room = W - fx - w(k, 9) - 8;
+    const kw = w(k, 8.5) + k.length * 0.8;
+    const room = W - fx - kw - 8;
     if (room < 40) break;
-    const max = Math.floor(room / (10.5 * CW));
-    const val = v.length > max ? `${v.slice(0, max - 1)}…` : v;
-    body += t(fx, fy, k, { size: 9, weight: 700, cls: "lb", ls: 0.8 });
-    fx += w(k, 9) + k.length * 0.8 + 6;
-    body += t(fx, fy, val, { size: 10.5, cls: "mu" });
-    fx += w(val, 10.5) + 18;
+    const val = fit(v, 9.5, Math.min(room, 260));
+    body += t(fx, fy, k, { size: 8.5, weight: 700, cls: "lb", ls: 0.8 });
+    fx += kw + 6;
+    body += t(fx, fy, val, { size: 9.5, cls: "mu" });
+    fx += w(val, 9.5) + 16;
   }
 
-  const height = fy + 8;
+  const height = fy + 6;
   const cls = (i) => Object.entries(PAL).map(([k, v]) => `.${k}{fill:${v[i]}}`).join("");
   const source = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${height}" viewBox="0 0 ${W} ${height}" font-family="${FONT}">` +
     `<style>${cls(0)}@media (prefers-color-scheme:dark){${cls(1)}}</style>${body}</svg>`;
