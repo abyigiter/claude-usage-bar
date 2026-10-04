@@ -1006,7 +1006,7 @@ function cardCss(i) {
   return PILL_TONES.map((k) => `.cb-${k}{fill:${PAL[k][i]};fill-opacity:${i ? 0.07 : 0.05};stroke:${PAL[k][i]};stroke-opacity:${i ? 0.2 : 0.18}}`).join("");
 }
 
-function svgPill(tone, items, href) {
+function svgPill(tone, items) {
   const GAP = 5, PADX = 10;
   let x = PADX, body = "";
   items = items.map((it) => (it.label != null && tone && !it.cls ? { ...it, cls: tone } : it));
@@ -1020,13 +1020,6 @@ function svgPill(tone, items, href) {
   const source = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${H}" viewBox="0 0 ${width} ${H}" font-family="${FONT}">` +
     `<style>${cls(0)}@media (prefers-color-scheme:dark){${cls(1)}}</style>` +
     `<rect class="pb-${tone ?? "n"}" x=".5" y="3.5" width="${width - 1}" height="${H - 7}" rx="${(H - 7) / 2}" stroke-width="1"/>${body}</svg>`;
-  if (href) {
-    // the whole pill is the link; it brightens under the pointer
-    const linked = source
-      .replace("</style>", "a{cursor:pointer}a:hover .pb-hover{fill-opacity:.12}</style>")
-      .replace(/(<rect class="pb-[^"]+"[^>]*\/>)([\s\S]*)<\/svg>$/, `<a href="${esc(href)}" target="_blank" rel="noopener">$1<rect class="pb-hover fg" x=".5" y="3.5" width="${width - 1}" height="${H - 7}" rx="${(H - 7) / 2}" fill-opacity="0"/>$2</a></svg>`);
-    return { source: linked, width };
-  }
   return { source, width };
 }
 
@@ -1076,10 +1069,8 @@ function desktopRow({ Svg }, { u, git, working, budget, ledger }) {
     const items = [{ dot: true, tone }, { value: `#${pr.number}`, tone, tight: true }, { aside: pr.state }];
     if (pr.review) items.push({ aside: pr.review === "approved" ? "✓ approved" : "✗ changes", tone: pr.review === "approved" ? "green" : "red" });
     if (pr.checks) items.push({ aside: { pass: "✓ ci", fail: `✗ ${pr.failing?.length || ""} ci`.replace("  ", " "), pending: "● ci" }[pr.checks], tone: { pass: "green", fail: "red", pending: "yellow" }[pr.checks] });
-    if (pr.url) items.push({ aside: "↗", tone });
-    const { source, width } = svgPill(tone, items, pr.url);
-    // interactive: drawn in a sandboxed frame, so the pill's own anchor can be clicked
-    right.push(Svg({ key: "pr", source, alt: prText(pr), width, height: H, ...(pr.url ? { isInteractive: true } : {}) }));
+    // no link here: the desktop app draws its own clickable PR bar above the band
+    add(right, "pr", tone, items, prText(pr));
   }
 
   if (typeof u?.cost?.usd === "number") {

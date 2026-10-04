@@ -227,8 +227,7 @@ describe("usage-bar", () => {
     const desk = await $.ui.mount({ plugin: "usage-bar", surface: "desktop", component: "AbovePrompt", props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120 } } as any);
     const svgs: any[] = await desk.findAll({ type: "Svg" } as any);
     const pill = svgs.find((x) => String(x.props.source).includes("#144"));
-    expect(pill.props.isInteractive).toBe(true);
-    expect(pill.props.source).toContain('<a href="https://github.com/o/r/pull/144" target="_blank"');
+    expect(pill.props.isInteractive).toBeUndefined(); // an image like every pill; the app links the PR itself
     await desk.unmount();
     const r = await $.command.run({ command: "usage" } as any);
     expect(r.text).toContain("PR #144 open approved ✗ checks");
