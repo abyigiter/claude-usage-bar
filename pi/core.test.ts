@@ -14,6 +14,7 @@ const base = (over: Partial<View> = {}): View => ({
   files: ["/x/a.ts"],
   git: { branch: "main", added: 421, removed: 68, untracked: 1, ahead: 1, pr: { number: 144, state: "open", review: "approved", checks: "fail", failing: ["lint"] } },
   model: "glm-5.3-flash",
+  thinking: "high",
   budget: { session: 5 },
   ledger: { today: 14.1, week: 52.3 },
   now,
@@ -52,7 +53,7 @@ test("header shows every chip and keeps each line within the width", () => {
   for (const width of [200, 100, 60]) {
     const lines = header(base({ working: 42_000 }), width);
     const text = lines.map(strip).join("\n");
-    for (const s of ["14%", "$2.32", "/ $5", "today $14.10", "0:42", "main", "+421", "−68", "#144", "✗ ci", "glm-5.3-flash"]) assert.ok(text.includes(s), `${s} at ${width}`);
+    for (const s of ["14%", "$2.32", "/ $5", "today $14.10", "0:42", "main", "+421", "−68", "#144", "✗ ci", "glm-5.3-flash", "think:high"]) assert.ok(text.includes(s), `${s} at ${width}`);
     for (const l of lines) assert.ok(vis(l) <= width, `line fits ${width}`);
   }
 });

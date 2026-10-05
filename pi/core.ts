@@ -20,6 +20,7 @@ export type View = {
   files: string[];
   git: Git;
   model?: string;
+  thinking?: string; // pi's thinking level, "off" hides it
   budget: Budget;
   ledger?: Ledger;
   now: number;
@@ -320,7 +321,12 @@ export function header(v: View, width: number, light = false, expanded = false):
   if (calls && wide) chips.push(chip("purple", [[`${calls} calls`, "value"], ...(v.files.length ? [[` ✎ ${v.files.length}`, "accent"] as Part] : [])]));
   const dur = v.startedAt ? span(v.now - v.startedAt) : null;
   if (dur && wide) chips.push(chip("slate", [[dur, "value"]]));
-  if (v.model) chips.push(chip("slate", [[v.model, "aside"]]));
+  if (v.model || (v.thinking && v.thinking !== "off")) {
+    const parts: Part[] = [];
+    if (v.model) parts.push([v.model, "aside"]);
+    if (v.thinking && v.thinking !== "off") parts.push([`${v.model ? " " : ""}think:${v.thinking}`, "accent"]);
+    chips.push(chip("purple", parts));
+  }
   chips.push(dim(expanded ? "▴ /usage" : "▾ /usage"));
 
   // pack whole chips into lines

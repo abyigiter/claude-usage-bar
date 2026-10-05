@@ -52,6 +52,7 @@ export default function (pi: ExtensionAPI) {
       files,
       git,
       model: ctx?.model?.id?.split("/").pop(),
+      thinking: ctx?.thinkingLevel,
       budget,
       ledger,
       now: Date.now(),
@@ -187,6 +188,16 @@ export default function (pi: ExtensionAPI) {
       timers.push(setInterval(() => void refreshAll(), 60_000));
     }
     void refreshAll();
+  });
+
+  pi.on("thinking_level_select", (_e, c) => {
+    ctx = c;
+    redraw();
+  });
+
+  pi.on("model_select", (_e, c) => {
+    ctx = c;
+    redraw();
   });
 
   pi.on("session_shutdown", () => {
