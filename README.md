@@ -103,6 +103,24 @@ Prints everything above as text: limits with pace, context, session cost,
 today and the last 7 days, budgets, turns and cache hit rate, tools, edited
 files, git and PR with failing checks, model.
 
+## What it reads and runs
+
+No API calls of its own, no keys, no telemetry. Everything is local except
+the PR lookup, which goes through your own `gh` login.
+
+| | Claude Code | pi |
+| --- | --- | --- |
+| Usage and cost | Claude Code's own figures (`$.session.usage()`), the same numbers as `/cost` and the status line | The cost pi records on each message, read from your session files under `~/.pi/agent/sessions` |
+| Context breakdown | Claude Code's local `/context` estimate (`breakdown: "summary"`, no token-count requests) | Not available |
+| Commands it runs, in the session's directory | `git status --porcelain=v1 -b`, `git diff HEAD --shortstat`, `gh pr view --json number,url,state,isDraft,reviewDecision,statusCheckRollup` | The same three |
+| What it writes | Budgets and per-day totals in the plugin's own store | Budgets in `~/.pi/agent/usage-bar.json` |
+
+`git` runs every minute and after each turn. `gh` runs at most every 5
+minutes (every minute while CI runs) and only on a branch, and it does nothing
+when `gh` is missing or signed out. It never reads `.env` files, credentials or
+the contents of your repo; the git commands only return file counts and line
+totals.
+
 ## Building it
 
 A standard mod plugin: `.claude-plugin/plugin.json`, `hooks/hooks.json`, one
