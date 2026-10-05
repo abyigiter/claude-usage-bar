@@ -4,8 +4,8 @@ A Claude Code mod: a live band above the prompt with your context window,
 spend, rate limits, git state and pull request, plus a `▾ more` panel that
 shows where the context and the money went.
 
-Works in the Claude Code CLI and the desktop app's Code tab. Requires Claude
-Code 2.1.287 or later.
+Works in the Claude Code CLI, the desktop app's Code tab (Claude Code 2.1.287
+or later), and [pi](#pi).
 
 ![Desktop header](docs/desktop-header.png)
 
@@ -25,6 +25,27 @@ Code 2.1.287 or later.
 
 Update later with `/plugin marketplace update abyigiter-mods`, then
 `/reload-plugins`.
+
+## pi
+
+The same bar runs in [pi](https://pi.dev) as a widget above the editor:
+
+```
+pi install git:github.com/abyigiter/claude-usage-bar
+```
+
+Chips for context, cost (against your budget), today's spend, the running
+turn, git diff, the branch's PR, tool calls, session time and model. `/usage`
+toggles the detail panel (context forecast, spend per turn, turns and cache
+hit, top tools, edited files, failing checks); `/usage text` prints the
+figures. `/budget` works as below, stored in `~/.pi/agent/usage-bar.json`.
+
+Today and the last 7 days are exact in pi: they are summed from the cost pi
+records on every message in every session file under `~/.pi/agent/sessions`.
+There is no rate-limit chip, since pi talks to many providers. It sits happily
+next to a custom footer such as `pi-powerline-footer`.
+
+Tests: `npm test` (the drawing and parsing in `pi/core.ts`).
 
 ## The header
 

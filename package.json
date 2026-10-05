@@ -1,0 +1,21 @@
+{
+  "name": "pi-usage-bar",
+  "version": "1.0.0",
+  "description": "Live usage widget for pi: context, cost, today's spend across sessions, budgets, the running turn, git diff and PR status, with a /usage detail panel.",
+  "keywords": ["pi-package", "usage", "cost", "budget", "context", "git", "pull-request"],
+  "homepage": "https://github.com/abyigiter/claude-usage-bar",
+  "repository": { "type": "git", "url": "git+https://github.com/abyigiter/claude-usage-bar.git" },
+  "author": "Bugra Yigiter",
+  "type": "module",
+  "files": ["pi/usage-bar.ts", "pi/core.ts"],
+  "pi": {
+    "extensions": ["./pi/usage-bar.ts"]
+  },
+  "scripts": {
+    "test": "node --test pi/core.test.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  }
+}
