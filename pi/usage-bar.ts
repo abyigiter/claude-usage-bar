@@ -1,6 +1,7 @@
 // usage-bar for pi: a live widget above the editor with context, spend,
-// today across sessions, the running turn, git and the branch's PR. /usage
-// opens the detail panel, /budget sets limits. The drawing lives in core.ts.
+// today and month to date across sessions, the running turn, git and the
+// branch's PR. /usage opens the detail panel, /budget sets limits. The
+// drawing lives in core.ts.
 
 import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -89,10 +90,12 @@ export default function (pi: ExtensionAPI) {
     git = next;
   }
 
-  // Today and the last 7 days, summed from every pi session file's per-message
-  // cost. Files are re-read only when their size or mtime moved.
+  // Today, the last 7 days and the month so far, summed from every pi session
+  // file's per-message cost. Files are re-read only when their size or mtime
+  // moved.
   async function readLedger() {
-    const since = Date.now() - 8 * 86_400_000;
+    const first = new Date();
+    const since = Math.min(Date.now() - 8 * 86_400_000, new Date(first.getFullYear(), first.getMonth(), 1).getTime());
     const found: string[] = [];
     const walk = async (dir: string, depth: number) => {
       let names: import("node:fs").Dirent[] = [];
@@ -248,6 +251,15 @@ export default function (pi: ExtensionAPI) {
         c.ui.notify(report(view()), "info");
         return;
       }
+      expanded = !expanded;
+      redraw();
+    },
+  });
+
+  pi.registerShortcut("alt+u", {
+    description: "Toggle the usage detail panel",
+    handler: (c) => {
+      ctx = c;
       expanded = !expanded;
       redraw();
     },

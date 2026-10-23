@@ -42,7 +42,7 @@ declare module "claude-code" {
       turns?: UsageTurn[];
       ctxmap?: UsageContextMap;
       budget?: { session?: number; day?: number };
-      ledger?: { date: string; today: number; todayTurns: number; week: number; days: number[] };
+      ledger?: { date: string; today: number; todayTurns: number; week: number; month?: number; days: number[] };
       alerts?: { session?: number; day?: number; pace?: boolean };
     };
   }

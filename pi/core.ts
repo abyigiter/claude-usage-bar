@@ -8,7 +8,7 @@ export type Turn = { ms: number; usd: number; out: number; input: number; cacheR
 export type Pr = { number: number; state: string; review: "approved" | "changes" | null; checks: "pass" | "fail" | "pending" | null; failing: string[] };
 export type Git = { branch?: string; dirty?: number; untracked?: number; added?: number; removed?: number; ahead?: number; behind?: number; pr?: Pr | null };
 export type Budget = { session?: number; day?: number };
-export type Ledger = { today: number; week: number };
+export type Ledger = { today: number; week: number; month: number; days: number[] }; // days: last 7, oldest first
 export type View = {
   ctx?: { tokens: number | null; window: number; percent: number | null };
   history: number[]; // context tokens after each turn
@@ -153,13 +153,15 @@ export function costByDay(jsonl: string): Record<string, number> {
 }
 
 export function ledgerFrom(files: Record<string, number>[], now: number): Ledger {
-  const week = [...Array(7)].map((_, i) => dayKey(now - i * 86_400_000));
-  let today = 0, total = 0;
-  for (const days of files) {
-    today += days[week[0]] ?? 0;
-    for (const d of week) total += days[d] ?? 0;
+  const week = [...Array(7)].map((_, i) => dayKey(now - (6 - i) * 86_400_000)); // oldest first
+  const month = dayKey(now).slice(0, 7);
+  const days = week.map(() => 0);
+  let mtd = 0;
+  for (const f of files) {
+    week.forEach((d, i) => (days[i] += f[d] ?? 0));
+    for (const [d, usd] of Object.entries(f)) if (d.startsWith(month)) mtd += usd;
   }
-  return { today, week: total };
+  return { today: days[6], week: days.reduce((s, x) => s + x, 0), month: mtd, days };
 }
 
 export function parseStatus(out: string): Git {
@@ -289,9 +291,10 @@ export function header(v: View, width: number, light = false, expanded = false):
     chips.push(chip(use ? useTone(use.frac) === "green" ? "yellow" : useTone(use.frac) : "yellow", parts));
   }
 
-  if (v.ledger && v.ledger.today > 0) {
+  if (v.ledger && (v.ledger.today > 0 || v.ledger.month > 0)) {
     const parts: Part[] = [["today ", "label"], [money(v.ledger.today), "value"]];
     if (v.budget.day) parts.push([` / $${v.budget.day.toFixed(0)}`, "aside"]);
+    if (wide && v.ledger.month > v.ledger.today) parts.push([` mtd ${money(v.ledger.month)}`, "aside"]);
     const tone = v.budget.day ? useTone(v.ledger.today / v.budget.day) : "green";
     chips.push(chip(tone, parts));
   }
@@ -366,7 +369,10 @@ export function details(v: View, width: number, light = false): string[] {
     const burn = burnRate(v);
     if (burn) bits.push(dim(`${money(burn)}/h`));
     if (priced.length) bits.push(dim(`last +${money(priced.at(-1)!.usd)}`), dim(`avg ${money(priced.reduce((s, t) => s + t.usd, 0) / priced.length)}/turn`));
-    if (v.ledger) bits.push(dim(`today ${money(v.ledger.today)}`), dim(`7d ${money(v.ledger.week)}`));
+    if (v.ledger) {
+      const daily = sparkline(v.ledger.days);
+      bits.push(dim(`today ${money(v.ledger.today)}`), `${dim("7d")} ${daily ? `${toneFg("green", daily)} ` : ""}${dim(money(v.ledger.week))}`, dim(`mtd ${money(v.ledger.month)}`));
+    }
     const use = budgetUse(v.budget, v);
     if (use) bits.push(toneFg(useTone(use.frac), `${Math.round(use.frac * 100)}% of $${use.limit.toFixed(0)} ${use.scope} budget`));
     const spark = sparkline(priced.map((t) => t.usd));
@@ -401,7 +407,7 @@ export function report(v: View): string {
   const lines: string[] = [];
   if (v.ctx) lines.push(`Context: ${short(v.ctx.tokens ?? 0)} / ${short(v.ctx.window)} (${ctxPct(v)}%)`);
   lines.push(`Session: ${money(v.session.cost)}${burnRate(v) ? `, ${money(burnRate(v)!)}/h` : ""}`);
-  if (v.ledger) lines.push(`Today: ${money(v.ledger.today)}, last 7 days ${money(v.ledger.week)}`);
+  if (v.ledger) lines.push(`Today: ${money(v.ledger.today)}, last 7 days ${money(v.ledger.week)}, month to date ${money(v.ledger.month)}`);
   const use = budgetUse(v.budget, v);
   if (use) lines.push(`Budget: ${Math.round(use.frac * 100)}% of $${use.limit.toFixed(2)} (${use.scope})`);
   if (v.turns.length) lines.push(`Turns: ${v.turns.length}, cache hit ${cacheHit(v.turns) ?? 0}%`);

@@ -16,7 +16,7 @@ const base = (over: Partial<View> = {}): View => ({
   model: "glm-5.3-flash",
   thinking: "high",
   budget: { session: 5 },
-  ledger: { today: 14.1, week: 52.3 },
+  ledger: { today: 14.1, week: 52.3, month: 210.4, days: [1, 2, 3, 4, 5, 22.2, 14.1] },
   now,
   ...over,
 });
@@ -39,6 +39,10 @@ test("cost by day buckets entries by their local day", () => {
   const l = ledgerFrom([days, { [dayKey(now)]: 0.5 }], Date.parse("2026-10-05T12:00:00"));
   assert.equal(l.today, 3.5);
   assert.equal(l.week, 7.5);
+  const m = ledgerFrom([days, { "2026-09-30": 10 }], Date.parse("2026-10-05T12:00:00"));
+  assert.equal(m.week, 17);
+  assert.equal(m.month, 7); // September stays out of October's total
+  assert.deepEqual(m.days, [0, 10, 0, 0, 0, 4, 3]);
 });
 
 test("git and PR parsing", () => {
@@ -56,10 +60,11 @@ test("header shows every chip and keeps each line within the width", () => {
     for (const s of ["14%", "$2.32", "/ $5", "today $14.10", "0:42", "main", "+421", "−68", "#144", "✗ ci", "glm-5.3-flash", "think:high"]) assert.ok(text.includes(s), `${s} at ${width}`);
     for (const l of lines) assert.ok(vis(l) <= width, `line fits ${width}`);
   }
+  assert.ok(header(base(), 200).map(strip).join("\n").includes("mtd $210.40"));
 });
 
 test("details show context forecast, spend, turns, tools and failing checks", () => {
   const text = details(base(), 140).map(strip).join("\n");
-  for (const s of ["Context", "turns to full", "last +$0.21", "today $14.10", "46% of $5 session budget", "cache 90%", "bash", "Edited", "a.ts", "Failing", "lint"]) assert.ok(text.includes(s), s);
+  for (const s of ["Context", "turns to full", "last +$0.21", "today $14.10", "mtd $210.40", "46% of $5 session budget", "cache 90%", "bash", "Edited", "a.ts", "Failing", "lint"]) assert.ok(text.includes(s), s);
   assert.equal(turnsLeft(base()), 44); // 861.2k left at 19.4k a turn
 });

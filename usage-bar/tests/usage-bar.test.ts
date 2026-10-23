@@ -241,7 +241,7 @@ describe("usage-bar", () => {
     on("clock.every", () => ({ value: {} }));
     on("session.usage", () => ({ value: { startedAt: Date.now() - 60 * 60_000, context: { tokens: 1000, window: 200_000 }, rateLimits: [], cost: { usd: cost } } }));
     const toasts: string[] = [];
-    on("ui.toast", ($, e) => { toasts.push(e.text); });
+    on("ui.toast", ($, e) => { toasts.push(e.text); return { value: undefined }; });
     on("session.start", ($, e) => ({ cwd: e.cwd }));
     on("turn.complete", () => ({ text: "" }));
     on("prompt.submit", ($, e) => ({ text: e.text }));
@@ -256,13 +256,39 @@ describe("usage-bar", () => {
     const r = await $.command.run({ command: "usage" } as any);
     // the session began today, so today counts all of it, not only the turns since load
     if (new Date(Date.now() - 60 * 60_000).getDate() === new Date().getDate()) expect(r.text).toContain("Today: $5.50 over 1 turn");
+    expect(r.text).toContain("month to date $");
     const ui = await mount($);
     expect(await ui.find({ type: "Text", text: /\/ \$5/ })).toBeDefined();
     await ui.unmount();
     for (const surface of ["terminal", "desktop"] as const) {
       const m = await $.ui.mount({ plugin: "usage-bar", surface, component: "AbovePrompt", props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 120 } } as any);
       expect(m).toBeDefined();
+      if (surface === "desktop") {
+        const svgs: any[] = await m.findAll({ type: "Svg" } as any);
+        const today = svgs.find((x) => String(x.props.source).includes("TODAY"));
+        expect(today.props.isInteractive).toBe(true);
+        expect(today.props.source).toContain("<title>");
+      }
       await m.unmount();
     }
+  });
+
+  test("a draft PR pill has slate colors in light and dark", async ($, on) => {
+    stubUsage($, on);
+    on("process.run", ($, e) => {
+      const cmd = (e.argv ?? e.command ?? []).join(" ");
+      if (cmd.startsWith("git status")) return { value: { exitCode: 0, stdout: "## feat/x...origin/feat/x\n", stderr: "" } };
+      if (cmd.startsWith("gh pr view")) return { value: { exitCode: 0, stdout: JSON.stringify({ number: 7, url: "https://github.com/o/r/pull/7", state: "OPEN", isDraft: true, reviewDecision: "", statusCheckRollup: [] }), stderr: "" } };
+      return { value: { exitCode: 1, stdout: "", stderr: "" } };
+    });
+    on("session.start", ($, e) => ({ cwd: e.cwd }));
+    await $.session.start({ surface: "desktop", isInteractive: true, cwd: "/work" } as any);
+    const desk = await $.ui.mount({ plugin: "usage-bar", surface: "desktop", component: "AbovePrompt", props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120 } } as any);
+    const svgs: any[] = await desk.findAll({ type: "Svg" } as any);
+    const pill = svgs.find((x) => String(x.props.source).includes(">#7</text>"));
+    expect(pill.props.source).toContain(".slate{fill:#6b6b78}");
+    expect(pill.props.source).toContain(".slate{fill:#a3a3b0}");
+    expect(pill.props.source).toContain(".pb-slate{");
+    await desk.unmount();
   });
 });

@@ -34,14 +34,16 @@ The same bar runs in [pi](https://pi.dev) as a widget above the editor:
 pi install git:github.com/abyigiter/claude-usage-bar
 ```
 
-Chips for context, cost (against your budget), today's spend, the running
-turn, git diff, the branch's PR, tool calls, session time and model. `/usage`
-toggles the detail panel (context forecast, spend per turn, turns and cache
-hit, top tools, edited files, failing checks); `/usage text` prints the
-figures. `/budget` works as below, stored in `~/.pi/agent/usage-bar.json`.
+Chips for context, cost (against your budget), today's and month-to-date
+spend, the running turn, git diff, the branch's PR, tool calls, session time
+and model. `/usage` toggles the detail panel, as does `alt+u` (context
+forecast, spend per turn, turns and cache hit, top tools, edited files,
+failing checks); `/usage text` prints the figures. `/budget` works as below,
+stored in `~/.pi/agent/usage-bar.json`.
 
-Today and the last 7 days are exact in pi: they are summed from the cost pi
-records on every message in every session file under `~/.pi/agent/sessions`.
+Today, the last 7 days and the month to date are exact in pi: they are summed
+from the cost pi records on every message in every session file under
+`~/.pi/agent/sessions`.
 There is no rate-limit chip, since pi talks to many providers. It sits happily
 next to a custom footer such as `pi-powerline-footer`.
 
@@ -60,7 +62,7 @@ needs attention. Pills flow in one row and wrap as units.
 | git | Branch, lines added and removed against HEAD (`+421 −68`), untracked files (`?1`), ahead and behind. |
 | PR | The branch's pull request through `gh`: state, review, CI (`✓` pass, `✗` fail, `●` running). Re-checked every 5 minutes, every minute while CI runs, with a toast when it finishes. Needs the GitHub CLI signed in. |
 | `COST` | Session spend and burn rate (`$/h`), against your budget when one is set. |
-| `TODAY` | Spend across every session today, and the last 7 days. |
+| `TODAY` | Spend across every session today, a bar per day for the last 7 days, the 7-day total and month to date (`mtd`). Hover it on desktop for the day-by-day figures. |
 
 In the terminal the same figures are tinted chips.
 
@@ -72,7 +74,7 @@ with nothing to show yet are left out.
 - **Context**: a stacked bar by `/context` category (messages, tools, MCP,
   memory, skills) and how many turns are left before auto-compact at your
   average growth.
-- **Spend**: total, today, last turn, average per turn, a bar per turn.
+- **Spend**: total, today, last 7 days, month to date, last turn, average per turn, a bar per turn.
 - **Turns**: count, average and longest duration, prompt cache hit rate,
   tokens written, a bar per turn.
 - **Tools**: the top five tools (MCP names shortened). Failing CI checks are
@@ -90,18 +92,18 @@ with nothing to show yet are left out.
 A toast fires at 80% and at 100% of each budget, and once when your burn
 rate will cross the session budget within 15 minutes.
 
-## Today's spend
+## Daily and monthly spend
 
 Each session keeps its own running total per local day in the plugin store
-(kept 30 days); today is the sum over sessions. A session that began today
-counts in full, one carried over from an earlier day counts from its first
-reading today.
+(kept 35 days); today is the sum over sessions, month to date the sum since
+the 1st. A session that began today counts in full, one carried over from an
+earlier day counts from its first reading today.
 
 ## `/usage`
 
 Prints everything above as text: limits with pace, context, session cost,
-today and the last 7 days, budgets, turns and cache hit rate, tools, edited
-files, git and PR with failing checks, model.
+today, the last 7 days and month to date, budgets, turns and cache hit rate,
+tools, edited files, git and PR with failing checks, model.
 
 ## What it reads and runs
 

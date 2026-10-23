@@ -21,7 +21,7 @@ const HISTORY = 12;
 const TURN_LOG = 24;
 const PR_TTL = 5 * 60_000;
 const PR_TTL_PENDING = 60_000; // while CI runs, so its result toasts soon after
-const LEDGER_DAYS = 30;
+const LEDGER_DAYS = 35; // a whole month back, so month to date always reaches the 1st
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 let commandName;
 let turnStart = 0; // ms, 0 when no turn is running
@@ -242,6 +242,10 @@ async function syncLedger($, isTurn = false) {
   await refreshLedger($);
 }
 
+// day:<date>:<session> entries before today never change again, so their
+// values are cached between refreshes instead of re-read from the store.
+const pastDays = new Map();
+
 async function refreshLedger($) {
   let keys = [];
   try {
@@ -251,24 +255,32 @@ async function refreshLedger($) {
   }
   const days = [...Array(7)].map((_, i) => dayKey(Date.now() - i * 86_400_000)).reverse();
   const totals = Object.fromEntries(days.map((d) => [d, { usd: 0, turns: 0 }]));
+  const today = days.at(-1);
+  const month = today.slice(0, 7);
   const oldest = dayKey(Date.now() - LEDGER_DAYS * 86_400_000);
+  let mtd = 0;
   for (const k of keys) {
     const d = k.split(":")[1];
     if (d < oldest) {
+      pastDays.delete(k);
       try { await $.store.delete(k); } catch { /* keep */ }
       continue;
     }
+    const inMonth = d.startsWith(month);
+    if (!totals[d] && !inMonth) continue;
+    const v = pastDays.has(k) ? pastDays.get(k) : await storeGet($, k);
+    if (d < today) pastDays.set(k, v);
+    if (inMonth) mtd += v?.spent ?? 0;
     if (!totals[d]) continue;
-    const v = await storeGet($, k);
     totals[d].usd += v?.spent ?? 0;
     totals[d].turns += v?.turns ?? 0;
   }
-  const today = totals[days.at(-1)];
   await $.state.set(LEDGER, {
-    date: days.at(-1),
-    today: today.usd,
-    todayTurns: today.turns,
+    date: today,
+    today: totals[today].usd,
+    todayTurns: totals[today].turns,
     week: days.reduce((s, d) => s + totals[d].usd, 0),
+    month: mtd,
     days: days.map((d) => totals[d].usd),
   });
 }
@@ -453,7 +465,7 @@ function usageLines(u = {}, a = { calls: 0, files: [] }, git, turns = [], budget
   const top = Object.entries(a.tools ?? {}).sort((x, y) => y[1] - x[1]).slice(0, 5);
   if (top.length) lines.push(`  tools: ${top.map(([n, c]) => `${n}×${c}`).join("  ")}`);
   if (a.files.length) lines.push(`  edited: ${a.files.slice(-5).map((f) => f.split("/").pop()).join(", ")}`);
-  if (ledger) lines.push(`Today: $${ledger.today.toFixed(2)} over ${ledger.todayTurns} turn${ledger.todayTurns === 1 ? "" : "s"}  ·  last 7 days $${ledger.week.toFixed(2)}`);
+  if (ledger) lines.push(`Today: $${ledger.today.toFixed(2)} over ${ledger.todayTurns} turn${ledger.todayTurns === 1 ? "" : "s"}  ·  last 7 days $${ledger.week.toFixed(2)}${ledger.month != null ? `  ·  month to date $${ledger.month.toFixed(2)}` : ""}`);
   lines.push(...budgetLines(budget, u, ledger));
   if (git?.branch) lines.push(`Git: ${gitText(git)}`);
   for (const c of git?.pr?.failing ?? []) lines.push(`  ✗ ${c.name}  ${c.url}`);
@@ -700,6 +712,7 @@ function terminalRow({ Box, Text }, { u, a, git, working, columns, budget, ledge
     const burn = burnRate(u);
     if (burn && wide) parts.push([` $${burn.toFixed(2)}/h`, "aside"]);
     if (ledger?.today > 0 && wide) parts.push([` today $${ledger.today.toFixed(2)}${budget?.day ? ` / $${budget.day.toFixed(0)}` : ""}`, "aside"]);
+    if (ledger?.month > ledger?.today && wide) parts.push([` mtd $${ledger.month.toFixed(2)}`, "aside"]);
     chips.push(chip(Text, budgetTone(use) ?? "yellow", parts, "cost"));
   }
 
@@ -778,7 +791,12 @@ function terminalDetails({ Box, Text }, d, git, u, columns = 100) {
     if (d.burn) kids.push(T(`  $${d.burn.toFixed(2)}/h`, { dimColor: true }));
     if (d.lastCost) kids.push(T(`  last +$${d.lastCost.toFixed(2)}`, { dimColor: true }));
     if (d.avgCost != null) kids.push(T(`  avg $${d.avgCost.toFixed(2)}/turn`, { dimColor: true }));
-    if (d.ledger) kids.push(T(`  today $${d.ledger.today.toFixed(2)}  7d $${d.ledger.week.toFixed(2)}`, { dimColor: true }));
+    if (d.ledger) {
+      const daily = sparkline(d.ledger.days);
+      kids.push(T(`  today $${d.ledger.today.toFixed(2)}  7d `, { dimColor: true }));
+      if (daily) kids.push(T(`${daily} `, { color: "green" }));
+      kids.push(T(`$${d.ledger.week.toFixed(2)}${d.ledger.month != null ? `  mtd $${d.ledger.month.toFixed(2)}` : ""}`, { dimColor: true }));
+    }
     const use = budgetUse(d.budget, u, d.ledger);
     if (use) kids.push(T(`  ${Math.round(use.frac * 100)}% of $${use.limit.toFixed(0)} ${use.scope} budget`, { color: { green: "green", yellow: "yellow", red: "red" }[budgetTone(use)] }));
     const spark = sparkline(d.turnCosts);
@@ -931,6 +949,7 @@ const PAL = {
   blue: ["#3563d1", "#86a6ff"],
   purple: ["#6a52cc", "#a996ff"],
   cyan: ["#167f8c", "#5cc9d6"],
+  slate: ["#6b6b78", "#a3a3b0"],
 };
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const textW = (kind, s) => [...s].length * (SIZE[kind] * CW + TRACK[kind]);
@@ -991,7 +1010,7 @@ function compactSpan(s) {
 
 // A pill: one figure on a soft tint of its tone with a hairline edge. Each pill
 // is its own drawing, so the band's flex layout wraps them as units.
-const PILL_TONES = ["green", "yellow", "red", "blue", "purple", "cyan"];
+const PILL_TONES = ["green", "yellow", "red", "blue", "purple", "cyan", "slate"];
 function pillCss(i) {
   const fg = PAL.fg[i];
   return PILL_TONES.map((k) => `.pb-${k}{fill:${PAL[k][i]};fill-opacity:${i ? 0.17 : 0.12};stroke:${PAL[k][i]};stroke-opacity:${i ? 0.42 : 0.35}}`).join("") +
@@ -1003,7 +1022,7 @@ function cardCss(i) {
   return PILL_TONES.map((k) => `.cb-${k}{fill:${PAL[k][i]};fill-opacity:${i ? 0.07 : 0.05};stroke:${PAL[k][i]};stroke-opacity:${i ? 0.2 : 0.18}}`).join("");
 }
 
-function svgPill(tone, items) {
+function svgPill(tone, items, title) {
   const GAP = 5, PADX = 10;
   let x = PADX, body = "";
   items = items.map((it) => (it.label != null && tone && !it.cls ? { ...it, cls: tone } : it));
@@ -1014,9 +1033,13 @@ function svgPill(tone, items) {
   });
   const width = Math.ceil(x + PADX);
   const cls = (i) => Object.entries(PAL).map(([k, v]) => `.${k}{fill:${v[i]}}.${k}-s{stroke:${v[i]}}`).join("") + pillCss(i);
+  // a titled pill greys its tint on hover, hinting the tooltip that the host
+  // shows for <title>; only such pills are interactive
+  const hover = title ? ".pill{transition:fill-opacity .15s,stroke-opacity .15s}svg:hover .pill{fill-opacity:.3;stroke-opacity:.65}" : "";
   const source = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${H}" viewBox="0 0 ${width} ${H}" font-family="${FONT}">` +
-    `<style>${cls(0)}@media (prefers-color-scheme:dark){${cls(1)}}</style>` +
-    `<rect class="pb-${tone ?? "n"}" x=".5" y="3.5" width="${width - 1}" height="${H - 7}" rx="${(H - 7) / 2}" stroke-width="1"/>${body}</svg>`;
+    (title ? `<title>${esc(title)}</title>` : "") +
+    `<style>${cls(0)}@media (prefers-color-scheme:dark){${cls(1)}}${hover}</style>` +
+    `<rect class="${title ? "pill " : ""}pb-${tone ?? "n"}" x=".5" y="3.5" width="${width - 1}" height="${H - 7}" rx="${(H - 7) / 2}" stroke-width="1"/>${body}</svg>`;
   return { source, width };
 }
 
@@ -1025,9 +1048,9 @@ function svgPill(tone, items) {
 function desktopRow({ Svg }, { u, git, working, budget, ledger }) {
   const left = [];
   const right = [];
-  const add = (side, key, tone, items, alt) => {
-    const { source, width } = svgPill(tone, items);
-    side.push(Svg({ key, source, alt, width, height: H }));
+  const add = (side, key, tone, items, alt, title) => {
+    const { source, width } = svgPill(tone, items, title);
+    side.push(Svg({ key, source, alt, width, height: H, ...(title ? { isInteractive: true } : {}) }));
   };
 
   for (const rl of u?.rateLimits ?? []) {
@@ -1080,13 +1103,20 @@ function desktopRow({ Svg }, { u, git, working, budget, ledger }) {
     add(right, "cost", tone && tone !== "green" ? tone : "yellow", items, `cost $${u.cost.usd.toFixed(2)}`);
   }
 
-  if (ledger?.today > 0) {
+  if (ledger && (ledger.today > 0 || ledger.month > 0)) {
     const use = budget?.day ? ledger.today / budget.day : null;
     const tone = use == null ? null : use >= 1 ? "red" : use >= 0.8 ? "yellow" : null;
     const items = [{ label: "TODAY" }, { value: `$${ledger.today.toFixed(2)}`, tone: tone ?? undefined }];
     if (budget?.day) items.push({ aside: `/ $${budget.day.toFixed(0)}`, tight: true });
+    if (ledger.days?.slice(0, -1).some((v) => v > 0)) items.push({ spark: ledger.days, tone: tone ?? "green" });
     if (ledger.week > ledger.today) items.push({ aside: `7d $${ledger.week.toFixed(0)}` });
-    add(right, "today", tone ?? "green", items, `today $${ledger.today.toFixed(2)}`);
+    if (ledger.month > ledger.today) items.push({ aside: `mtd $${ledger.month.toFixed(0)}` });
+    const tip = [
+      ...(ledger.days ?? []).map((v, i) => `${dayKey(Date.now() - (6 - i) * 86_400_000).slice(5)}  $${v.toFixed(2)}`),
+      `last 7 days  $${ledger.week.toFixed(2)}`,
+      ledger.month != null && `month to date  $${ledger.month.toFixed(2)}`,
+    ].filter(Boolean).join("\n");
+    add(right, "today", tone ?? "green", items, `today $${ledger.today.toFixed(2)}${ledger.month != null ? `, month to date $${ledger.month.toFixed(2)}` : ""}`, tip);
   }
 
   return { left, right };
@@ -1116,11 +1146,11 @@ function desktopDetails({ Svg }, d, git, u) {
   const big = (x, s, cls = "fg", side) => t(x + P, 45, s, { size: 19, weight: 700, cls }) +
     (side ? t(x + P + w(s, 19) + 6, 45, fit(side, 9.5, CARD_W - 2 * P - w(s, 19) - 6), { size: 9.5, cls: "mu" }) : "");
   const line = (x, s, cls = "mu") => t(x + P, 62, fit(s, 9.5, CARD_W - 2 * P), { size: 9.5, cls });
-  const cols = (x, values, cls) => {
+  const cols = (x, values, cls, maxH = 26) => {
     if (values.length < 2) return "";
     const top = Math.max(...values, 1e-9), n = values.length, gw = CARD_W - 2 * P, bw = Math.min(8, (gw - (n - 1) * 2.5) / n);
     return values.map((v, i) => {
-      const h = Math.max(2, (v / top) * 26);
+      const h = Math.max(2, (v / top) * maxH);
       return `<rect class="${cls}" x="${(x + P + i * (bw + 2.5)).toFixed(1)}" y="${(CARD_H - 10 - h).toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="1.5" opacity="${i === n - 1 ? 1 : 0.55}"/>`;
     }).join("");
   };
@@ -1170,7 +1200,8 @@ function desktopDetails({ Svg }, d, git, u) {
     if (d.cost != null) {
       body += big(x, `$${d.cost.toFixed(2)}`, "fg", d.ledger?.today > 0 ? `today $${d.ledger.today.toFixed(2)}` : d.burn && use ? `$${d.burn.toFixed(2)}/h` : null);
       body += line(x, [d.lastCost && `last +$${d.lastCost.toFixed(2)}`, d.avgCost != null && `avg $${d.avgCost.toFixed(2)}`].filter(Boolean).join(" · ") || (d.turns ? "per turn from next turn" : d.session ? `over ${d.session}` : ""));
-      body += cols(x, d.turnCosts, "yellow");
+      if (d.ledger) body += t(x + P, 75, fit(`7d $${d.ledger.week.toFixed(2)}${d.ledger.month != null ? ` · mtd $${d.ledger.month.toFixed(2)}` : ""}`, 9, CARD_W - 2 * P), { size: 9, cls: "lb" });
+      body += cols(x, d.turnCosts, "yellow", d.ledger ? 16 : 26);
     }
   }
 
